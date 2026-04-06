@@ -1,0 +1,24 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Configure",
+            "type": "shell",
+            "command": "cmake -Bbuild .",
+            "group": "none",
+            "problemMatcher": []
+        },
+        {
+            "label": "Build and Test",
+            "type": "shell",
+            "command": "cmake --build build && ctest --test-dir build",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": [
+                "$gcc"
+            ]
+        },
+    ]
+}
