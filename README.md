@@ -23,6 +23,9 @@ gemma-4-the-hard-way$ cmake -Bbuild .
 gemma-4-the-hard-way$ cmake --build build
 # Test
 gemma-4-the-hard-way$ ctest --test-dir build
+
+# Download model
+gemma-4-the-hard-way$ wget https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-e2b-it-Q8_0.gguf
 ```
 
 ## References
@@ -30,3 +33,5 @@ gemma-4-the-hard-way$ ctest --test-dir build
 Any accessed external documentation, tutorials and reference material will be declared in this section.
 
 - [Unity Test Framework](https://github.com/ThrowTheSwitch/Unity/blob/master). MIT License. Code from their `src` directory was copied directly to `tests/framework` in this repository.
+- [GGUF Format Specification](https://github.com/ggml-org/ggml/blob/master/docs/gguf.md). Enums were copied from the pseudocode.
+- [Gemma 4 Model on Hugging Face](https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF)

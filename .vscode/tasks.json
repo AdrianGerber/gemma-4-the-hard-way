@@ -9,9 +9,9 @@
             "problemMatcher": []
         },
         {
-            "label": "Build and Test",
+            "label": "Build, Test and Run",
             "type": "shell",
-            "command": "cmake --build build && ctest --test-dir build",
+            "command": "cmake --build build && ctest --test-dir build && ./build/hello_world",
             "group": {
                 "kind": "build",
                 "isDefault": true
