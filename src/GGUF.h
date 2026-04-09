@@ -134,6 +134,88 @@ typedef struct
     GGUF_MetadataValue_t value;
 } GGUF_Metadata_t;
 
+/**
+ * @brief Available data types for tensors.
+ *        Enum copied from https://github.com/ggml-org/ggml/blob/master/docs/gguf.md.
+ *
+ */
+typedef enum
+{
+    GGML_TYPE_F32 = 0,
+    GGML_TYPE_F16 = 1,
+    // GGML_TYPE_Q4_0 = 2,
+    // GGML_TYPE_Q4_1 = 3,
+    // GGML_TYPE_Q4_2 = 4, support has been removed
+    // GGML_TYPE_Q4_3 = 5, support has been removed
+    // GGML_TYPE_Q5_0 = 6,
+    // GGML_TYPE_Q5_1 = 7,
+    GGML_TYPE_Q8_0 = 8,
+    // GGML_TYPE_Q8_1 = 9,
+    // GGML_TYPE_Q2_K = 10,
+    // GGML_TYPE_Q3_K = 11,
+    // GGML_TYPE_Q4_K = 12,
+    // GGML_TYPE_Q5_K = 13,
+    // GGML_TYPE_Q6_K = 14,
+    // GGML_TYPE_Q8_K = 15,
+    // GGML_TYPE_IQ2_XXS = 16,
+    // GGML_TYPE_IQ2_XS = 17,
+    // GGML_TYPE_IQ3_XXS = 18,
+    // GGML_TYPE_IQ1_S = 19,
+    // GGML_TYPE_IQ4_NL = 20,
+    // GGML_TYPE_IQ3_S = 21,
+    // GGML_TYPE_IQ2_S = 22,
+    // GGML_TYPE_IQ4_XS = 23,
+    // GGML_TYPE_I8 = 24,
+    // GGML_TYPE_I16 = 25,
+    // GGML_TYPE_I32 = 26,
+    // GGML_TYPE_I64 = 27,
+    // GGML_TYPE_F64 = 28,
+    // GGML_TYPE_IQ1_M = 29,
+    // GGML_TYPE_BF16 = 30,
+    // GGML_TYPE_Q4_0_4_4 = 31, support has been removed from gguf files
+    // GGML_TYPE_Q4_0_4_8 = 32,
+    // GGML_TYPE_Q4_0_8_8 = 33,
+    // GGML_TYPE_TQ1_0 = 34,
+    // GGML_TYPE_TQ2_0 = 35,
+    // GGML_TYPE_IQ4_NL_4_4 = 36,
+    // GGML_TYPE_IQ4_NL_4_8 = 37,
+    // GGML_TYPE_IQ4_NL_8_8 = 38,
+    // GGML_TYPE_MXFP4 = 39, // MXFP4 (1 block)
+    // GGML_TYPE_COUNT = 40,
+} GGUF_Type_t;
+
+typedef uint16_t float16_t; // This looks so wrong :)
+
+typedef struct
+{
+    float16_t scale;
+    int8_t quantized[32];
+} GGUF_Q8_0_t;
+
+/**
+ * @brief Union holding the raw weights.
+ *
+ */
+typedef union
+{
+    const float *float32;
+    const float16_t *float16;
+    const GGUF_Q8_0_t *q8_0;
+} GGUF_TensorData_t;
+
+/**
+ * @brief Defines a tensor as stored in a GGUF file.
+ *
+ */
+typedef struct
+{
+    GGUF_String_t name;
+    uint32_t dimensionCount;
+    uint64_t *dimensions;
+    GGUF_Type_t type;
+    GGUF_TensorData_t data;
+} GGUF_TensorInfo_t;
+
 /******************************************************************************
  * Public Function Prototypes
  ******************************************************************************/
@@ -157,7 +239,7 @@ void GGUF_StringRelease(const GGUF_String_t str);
 /**
  * @brief Decode the type of a GGUF metadata field.
  *
- * @param data Pointer to a pointer to the raw GGUF data representing the string.
+ * @param data Pointer to a pointer to the raw GGUF data representing the type.
  *             Is advanced to past the string data.
  * @return GGUF_MetadataType_t Enum representing the type.
  */
@@ -167,7 +249,7 @@ GGUF_MetadataType_t GGUF_MetadataTypeFromMemory(const uint8_t **data);
  * @brief Decode the value of a metadata field.
  *
  * @param type Type of the value.
- * @param data data Pointer to a pointer to the raw GGUF data representing the string.
+ * @param data data Pointer to a pointer to the raw GGUF data representing the value.
  *             Is advanced to past the string data.
  * @return GGUF_MetadataValue_t Union holding the value. Content must be free'd using GGUF_MetadataValueRelease.
  */
@@ -192,7 +274,7 @@ void GGUF_MetadataValuePrint(GGUF_MetadataType_t type, GGUF_MetadataValue_t valu
 /**
  * @brief Read an entire key-value pair from GGUF metadata.
  *
- * @param data data Pointer to a pointer to the raw GGUF data representing the string.
+ * @param data data Pointer to a pointer to the raw GGUF data representing the metadata.
  *             Is advanced to past the string data.
  * @return GGUFMetadata_t Key-value-pair. Must be free'd using GGUFMetadata_Release.
  */
@@ -208,8 +290,32 @@ void GGUF_MetadataRelease(GGUF_Metadata_t metadata);
 /**
  * @brief Print a metadata key-value pair to stdout for debugging.
  *
- * @param Instance.
+ * @param metadata Instance.
  */
 void GGUF_MetadataPrint(GGUF_Metadata_t metadata);
+
+/**
+ * @brief Read a tensor info entry from the GGUF file format.
+ *
+ * @param data data Pointer to a pointer to the raw GGUF data representing the tensor info section.
+ *             Is advanced to past the string data.
+ * @param startOfFile Pointer to the beginning of the file.
+ * @return GGUF_TensorInfo_t Resulting tensor information. Must be free'd using GGUF_TensorInfoRelease.
+ */
+GGUF_TensorInfo_t GGUF_TensorInfoFromMemory(const uint8_t **data, const uint8_t *startOfFile);
+
+/**
+ * @brief Free a tensor information structure.
+ *
+ * @param info Instance.
+ */
+void GGUF_TensorInfoRelease(GGUF_TensorInfo_t info);
+
+/**
+ * @brief Print a tensor infor struct to stdout for debugging.
+ *
+ * @param info Instance.
+ */
+void GGUF_TensorInfoPrint(GGUF_TensorInfo_t info);
 
 #endif /* GGUF_H_ */

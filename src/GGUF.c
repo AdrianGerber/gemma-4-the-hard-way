@@ -234,6 +234,65 @@ void GGUF_MetadataPrint(GGUF_Metadata_t metadata)
     printf("\n");
 }
 
+GGUF_TensorInfo_t GGUF_TensorInfoFromMemory(const uint8_t **data, const uint8_t *startOfFile)
+{
+
+    GGUF_TensorInfo_t info;
+
+    info.name = GGUF_StringFromMemory(data);
+    info.dimensionCount = GGUF_MetadataValueFromMemory(GGUF_METADATA_VALUE_TYPE_UINT32, data).uint32;
+
+    size_t dimensionsSize = info.dimensionCount * sizeof(uint64_t);
+    info.dimensions = malloc(dimensionsSize);
+    assert(info.dimensions);
+    memcpy(info.dimensions, *data, dimensionsSize);
+    *data += dimensionsSize;
+
+    info.type = GGUF_MetadataValueFromMemory(GGUF_METADATA_VALUE_TYPE_UINT32, data).uint32;
+    uint64_t offset = GGUF_MetadataValueFromMemory(GGUF_METADATA_VALUE_TYPE_UINT64, data).uint64;
+
+    switch (info.type)
+    {
+    case GGML_TYPE_F32:
+        info.data.float32 = (const float *)(startOfFile + offset);
+        break;
+    case GGML_TYPE_F16:
+        info.data.float16 = (const float16_t *)(startOfFile + offset);
+        break;
+    case GGML_TYPE_Q8_0:
+        info.data.q8_0 = (const GGUF_Q8_0_t *)(startOfFile + offset);
+        break;
+    default:
+        fprintf(stderr, "Unknown tensor data type %u\n", info.type);
+        assert(false);
+    }
+
+    return info;
+}
+
+void GGUF_TensorInfoRelease(GGUF_TensorInfo_t info)
+{
+    GGUF_StringRelease(info.name);
+    free(info.dimensions);
+}
+
+void GGUF_TensorInfoPrint(GGUF_TensorInfo_t info)
+{
+
+    printf("%s\t[", info.name);
+
+    for (size_t i = 0; i < info.dimensionCount; i++)
+    {
+        printf("%lu", info.dimensions[i]);
+
+        if (i < info.dimensionCount - 1)
+        {
+            printf(",");
+        }
+    }
+    printf("]\ttype=%u\n", info.type);
+}
+
 /******************************************************************************
  * Private Function Implementations
  ******************************************************************************/

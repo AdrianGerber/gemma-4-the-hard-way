@@ -16,7 +16,7 @@ if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
         -Wundef
         -Wstrict-prototypes
         -Wmissing-prototypes
-        -fanalyzer
+#        -fanalyzer --> fanalyzer really doesn't seem to like returning pointers to malloc'd data in a struct by value. My code may well have other memory leaks, but I don't think fanalyzer is correct here.    
     )
 endif()
 

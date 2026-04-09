@@ -16,6 +16,8 @@ typedef struct
 {
     GGUF_Metadata_t *metadata;
     size_t metadataCount;
+    GGUF_TensorInfo_t *tensorInfo;
+    size_t tensorInfoCount;
 } Model_t;
 
 Model_t *ParseModelFromGGUF(const uint8_t *data, size_t length);
@@ -94,10 +96,12 @@ Model_t *ParseModelFromGGUF(const uint8_t *data, size_t length)
     }
 
     // Parse metadata
+    printf("\nMetadata:\n");
     Model_t *model = malloc(sizeof(Model_t));
     assert(model);
     model->metadataCount = metadataCount;
     model->metadata = malloc(metadataCount * sizeof(GGUF_Metadata_t));
+    assert(model->metadata);
     for (size_t i = 0; i < metadataCount; i++)
     {
         model->metadata[i] = GGUF_MetadataFromMemory(&metadata);
@@ -116,6 +120,17 @@ Model_t *ParseModelFromGGUF(const uint8_t *data, size_t length)
         }
     }
 
+    // Parse tensor infos
+    printf("\nTensors:\n");
+    model->tensorInfoCount = tensorCount;
+    model->tensorInfo = malloc(tensorCount * sizeof(GGUF_TensorInfo_t));
+    assert(model->tensorInfo);
+    for (size_t i = 0; i < tensorCount; i++)
+    {
+        model->tensorInfo[i] = GGUF_TensorInfoFromMemory(&metadata, data);
+        GGUF_TensorInfoPrint(model->tensorInfo[i]);
+    }
+
     // TODO: memory length safety
 
     return model;
@@ -130,6 +145,15 @@ void ReleaseModel(Model_t *model)
             GGUF_MetadataRelease(model->metadata[i]);
         }
         free(model->metadata);
+    }
+
+    if (model->tensorInfo)
+    {
+        for (size_t i = 0; i < model->tensorInfoCount; i++)
+        {
+            GGUF_TensorInfoRelease(model->tensorInfo[i]);
+        }
+        free(model->tensorInfo);
     }
 
     free(model);
