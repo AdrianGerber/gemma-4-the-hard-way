@@ -162,6 +162,8 @@ TokenizerEncoded_t Tokenizer_Encode(Tokenizer_t tokenizer, const char *input)
     {
         uint32_t tokenIndex; // Corresponding token in the LLM tokens list
         size_t length;       // Nubmer of input bytes mapping to this token.
+        bool scored;         // Did we already compute the score for this token?
+        uint32_t mergeScore; // Cached score for merging to the right.
     } TmpToken_t;
     const size_t initialCount = strlen(processedInput);
     size_t finalTokenCount = initialCount;
@@ -227,8 +229,7 @@ TokenizerEncoded_t Tokenizer_Encode(Tokenizer_t tokenizer, const char *input)
         // Note: This loop is inefficient on multiple levels. First of all, both scoring the merges
         //       and converting strings to tokens result in linear searches on huge arrays. There
         //       should probably be some smart datastructure (hash-map?) or at least a binary search
-        //       on the sorted arrays. And second, I think we could easily avoid re-computing many
-        //       of the merge scores on each iteration.
+        //       on the sorted arrays.
 
         // Find the first active token
         size_t leftTokenForMerge = 0;
@@ -249,7 +250,15 @@ TokenizerEncoded_t Tokenizer_Encode(Tokenizer_t tokenizer, const char *input)
                 rightTokenForMerge++;
             }
 
-            const uint32_t score = ScorePotentialMerge(tokenizer, processedInput + leftTokenForMerge, tmp[leftTokenForMerge].length, processedInput + rightTokenForMerge, tmp[rightTokenForMerge].length);
+            // Only recalculate the score for tokens that were affected by a merge
+            uint32_t score = tmp[leftTokenForMerge].mergeScore;
+            if (!tmp[leftTokenForMerge].scored)
+            {
+                score = ScorePotentialMerge(tokenizer, processedInput + leftTokenForMerge, tmp[leftTokenForMerge].length, processedInput + rightTokenForMerge, tmp[rightTokenForMerge].length);
+                tmp[leftTokenForMerge].scored = true;
+                tmp[leftTokenForMerge].mergeScore = score;
+            }
+
             if (score < bestScore) // '<' instead of '<=' to prioritize left-most merges
             {
                 bestScore = score;
@@ -276,6 +285,22 @@ TokenizerEncoded_t Tokenizer_Encode(Tokenizer_t tokenizer, const char *input)
             tmp[leftTokenForMerge].length += tmp[rightTokenForMerge].length;
             tmp[rightTokenForMerge].length = 0;
             tmp[leftTokenForMerge].tokenIndex = StringToToken(tokenizer, processedInput + leftTokenForMerge, tmp[leftTokenForMerge].length);
+            // The new token hasn't been scored yet.
+            tmp[leftTokenForMerge].scored = false;
+
+            // Because a new token was created, the cached merge score for the token to its left needs to be invalidated.
+            if (leftTokenForMerge)
+            {
+                size_t scoreInvalidatedToken = leftTokenForMerge - 1;
+                while (tmp[scoreInvalidatedToken].length == 0 && scoreInvalidatedToken)
+                {
+                    scoreInvalidatedToken--;
+                }
+                // Note: In case no active token is present to the left, this has no effect because it will just
+                //       write to index 0 of the array (is inactive in such a case).
+                tmp[scoreInvalidatedToken].scored = false;
+            }
+
             // We have now managed to represent the input text with one less token.
             finalTokenCount--;
         }
