@@ -336,6 +336,16 @@ void GGUF_TensorInfoPrint(GGUF_TensorInfo_t info);
 const GGUF_Metadata_t *GGUF_MetadataFindByKey(const GGUF_Metadata_t *metadata, size_t count, const char *key);
 
 /**
+ * @brief Find a tensor by name.
+ *
+ * @param tensors List of all tensors.
+ * @param count Number of entries in the list.
+ * @param key Key to search for.
+ * @return const GGUF_TensorInfo_t* NULL if not found.
+ */
+const GGUF_TensorInfo_t *GGUF_TensorFindByName(const GGUF_TensorInfo_t *tensorInfo, size_t count, const char *key);
+
+/**
  * @brief Check that the GGUF header is present and supported.
  *
  * @param data Raw bytes.

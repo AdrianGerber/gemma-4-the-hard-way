@@ -43,6 +43,27 @@
  * Type Definitions
  ******************************************************************************/
 
+typedef struct
+{
+    const GGUF_TensorInfo_t *attn_k;
+    const GGUF_TensorInfo_t *attn_k_norm;
+    const GGUF_TensorInfo_t *attn_norm;
+    const GGUF_TensorInfo_t *attn_output;
+    const GGUF_TensorInfo_t *attn_q;
+    const GGUF_TensorInfo_t *attn_q_norm;
+    const GGUF_TensorInfo_t *attn_v;
+    const GGUF_TensorInfo_t *ffn_down;
+    const GGUF_TensorInfo_t *ffn_gate;
+    const GGUF_TensorInfo_t *ffn_norm;
+    const GGUF_TensorInfo_t *ffn_up;
+    const GGUF_TensorInfo_t *inp_gate;
+    const GGUF_TensorInfo_t *layer_output_scale;
+    const GGUF_TensorInfo_t *post_attention_norm;
+    const GGUF_TensorInfo_t *post_ffw_norm;
+    const GGUF_TensorInfo_t *post_norm;
+    const GGUF_TensorInfo_t *proj;
+} Block_t;
+
 /**
  * @brief Structure representing the information needed to run a language model.
  *
@@ -51,8 +72,16 @@ typedef struct
 {
     GGUF_Metadata_t *metadata;
     GGUF_TensorInfo_t *tensorInfo;
-    size_t metadataCount, tensorInfoCount;
+    size_t metadataCount, tensorInfoCount, blockCount;
+    Block_t *blocks;
     Tokenizer_t tokenizer;
+
+    const GGUF_TensorInfo_t *output_norm;
+    const GGUF_TensorInfo_t *per_layer_model_proj;
+    const GGUF_TensorInfo_t *per_layer_proj_norm;
+    const GGUF_TensorInfo_t *per_layer_token_embd;
+    const GGUF_TensorInfo_t *rope_freqs;
+    const GGUF_TensorInfo_t *token_embd;
 } Model_t;
 
 /******************************************************************************

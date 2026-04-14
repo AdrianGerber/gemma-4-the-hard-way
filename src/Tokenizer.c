@@ -100,7 +100,7 @@ Tokenizer_t Tokenizer_Init(GGUF_Metadata_t *metadata, size_t count)
     assert(merges->type == GGUF_METADATA_VALUE_TYPE_ARRAY);
     assert(merges->value.array.type == GGUF_METADATA_VALUE_TYPE_STRING);
     tokenizer.merges = merges->value.array;
-    printf("- Found %lu merges.\n", tokenizer.merges.length);
+    printf("- Found %lu merge rules.\n", tokenizer.merges.length);
 
     const GGUF_Metadata_t *tokenIdBos = GGUF_MetadataFindByKey(metadata, count, "tokenizer.ggml.bos_token_id");
     const GGUF_Metadata_t *tokenIdEos = GGUF_MetadataFindByKey(metadata, count, "tokenizer.ggml.eos_token_id");
@@ -224,7 +224,7 @@ TokenizerEncoded_t Tokenizer_Encode(Tokenizer_t tokenizer, const char *input)
     // rank-based BPE tokenizer
     while (finalTokenCount > 1)
     {
-        // Note: This loop is inefficient in multiple levels. First of all, both scoring the merges
+        // Note: This loop is inefficient on multiple levels. First of all, both scoring the merges
         //       and converting strings to tokens result in linear searches on huge arrays. There
         //       should probably be some smart datastructure (hash-map?) or at least a binary search
         //       on the sorted arrays. And second, I think we could easily avoid re-computing many

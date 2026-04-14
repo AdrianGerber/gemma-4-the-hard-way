@@ -303,6 +303,16 @@ const GGUF_Metadata_t *GGUF_MetadataFindByKey(const GGUF_Metadata_t *metadata, s
     return NULL;
 }
 
+const GGUF_TensorInfo_t *GGUF_TensorFindByName(const GGUF_TensorInfo_t *tensorInfo, size_t count, const char *key)
+{
+    for (size_t i = 0; i < count; i++)
+    {
+        if (strcmp(tensorInfo[i].name, key) == 0)
+            return tensorInfo + i;
+    }
+    return NULL;
+}
+
 bool GGUF_VerifyHeader(const uint8_t *data, size_t length)
 {
     if (length < 24)

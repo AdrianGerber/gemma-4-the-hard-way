@@ -10,7 +10,7 @@ Create a C program that can run inference using one of Google's new [Gemma 4](ht
 - Weights are parsed from a GGUF file.
 - This project is about learning the details. AI coding assistants and agents may not be used to generate any part of the code except for unit tests.
 - Performance, compatibility, portability and reusability are not priorities.
-- No pre-existing libraries, except for a unit testing framework, are used. I know that this means "re-inventing the wheel" and that's the whole point of this project.
+- No pre-existing code, except for the C standard library, operating system headers for mmap and a unit testing framework are used. I know that this means "re-inventing the wheel" and that's the whole point of this project.
 
 ## Usage
 
@@ -37,3 +37,4 @@ Any accessed external documentation, tutorials and reference material will be de
 - [Gemma 4 Model on Hugging Face](https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF)
 - [Hugging Face LLM Course (Tokenizers)](https://huggingface.co/learn/llm-course/en/chapter2/4)  
 - [SentencePiece Tokenizer Documentation](https://github.com/google/sentencepiece)
+- [A Visual Guide to Gemma 4](https://newsletter.maartengrootendorst.com/p/a-visual-guide-to-gemma-4)
