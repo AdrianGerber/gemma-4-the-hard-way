@@ -38,6 +38,7 @@
  ******************************************************************************/
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 /******************************************************************************
  * Constants and Macros
@@ -95,6 +96,20 @@ typedef enum
 typedef union GGUF_MetadataValue_u GGUF_MetadataValue_t;
 
 /**
+ * @brief Array types in GGUF metadata.
+ *
+ */
+typedef struct
+{
+    // Any value type is valid, including arrays.
+    GGUF_MetadataType_t type;
+    // Number of elements, not bytes
+    uint64_t length;
+    // The array of values.
+    GGUF_MetadataValue_t *array;
+} GGUF_MetadataValueArray_t;
+
+/**
  * @brief Union holding all possible valuês of a metadata field.
  *
  */
@@ -112,15 +127,7 @@ union GGUF_MetadataValue_u
     //  double float64;
     bool bool_;
     GGUF_String_t str;
-    struct
-    {
-        // Any value type is valid, including arrays.
-        GGUF_MetadataType_t type;
-        // Number of elements, not bytes
-        uint64_t length;
-        // The array of values.
-        GGUF_MetadataValue_t *array;
-    } array;
+    GGUF_MetadataValueArray_t array;
 };
 
 /**
@@ -317,5 +324,15 @@ void GGUF_TensorInfoRelease(GGUF_TensorInfo_t info);
  * @param info Instance.
  */
 void GGUF_TensorInfoPrint(GGUF_TensorInfo_t info);
+
+/**
+ * @brief Find a metada item by name.
+ *
+ * @param metadata List of all metadata entries.
+ * @param count Number of entries in the list.
+ * @param key Key to search for.
+ * @return const GGUF_Metadata_t* NULL if not found.
+ */
+const GGUF_Metadata_t *GGUF_MetadataFindByKey(const GGUF_Metadata_t *metadata, size_t count, const char *key);
 
 #endif /* GGUF_H_ */

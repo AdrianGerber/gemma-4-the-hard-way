@@ -10,6 +10,7 @@
 #include "GGUF.h"
 #include <string.h>
 #include <assert.h>
+#include "Tokenizer.h"
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////
 typedef struct
@@ -54,6 +55,25 @@ int main(void)
     Model_t *model = ParseModelFromGGUF(data, (size_t)fileStat.st_size);
     if (model)
     {
+
+        printf("\n\n");
+
+        Tokenizer_t tokenizer = Tokenizer_Init(model->metadata, model->metadataCount);
+
+        const char *test =
+            "<bos>\n"
+            "<|turn>user\n"
+            "Hello world<turn|>\n"
+            "<|turn>model\n";
+
+        printf("Encoding Text '%s'\n", test);
+        TokenizerEncoded_t tokenIds = Tokenizer_Encode(tokenizer, test);
+        printf("Tokenized: ");
+        Tokenizer_DecodeToStdOut(tokenizer, tokenIds, true);
+        printf("\n");
+
+        Tokenizer_Release(tokenizer);
+
         ReleaseModel(model);
         model = NULL;
     }

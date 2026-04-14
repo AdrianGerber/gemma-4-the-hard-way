@@ -1,5 +1,5 @@
 /**
- * @file      GGUF.h
+ * @file      GGUF.c
  * @author    Adrian Gerber
  * @brief     Bare-minimum implementation for working with GGUF files.
  *            This code comes with the following limitations:
@@ -291,6 +291,16 @@ void GGUF_TensorInfoPrint(GGUF_TensorInfo_t info)
         }
     }
     printf("]\ttype=%u\n", info.type);
+}
+
+const GGUF_Metadata_t *GGUF_MetadataFindByKey(const GGUF_Metadata_t *metadata, size_t count, const char *key)
+{
+    for (size_t i = 0; i < count; i++)
+    {
+        if (strcmp(metadata[i].key, key) == 0)
+            return metadata + i;
+    }
+    return NULL;
 }
 
 /******************************************************************************

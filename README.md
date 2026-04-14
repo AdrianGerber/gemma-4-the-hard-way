@@ -35,3 +35,5 @@ Any accessed external documentation, tutorials and reference material will be de
 - [Unity Test Framework](https://github.com/ThrowTheSwitch/Unity/blob/master). MIT License. Code from their `src` directory was copied directly to `tests/framework` in this repository.
 - [GGUF Format Specification](https://github.com/ggml-org/ggml/blob/master/docs/gguf.md). Enums were copied from the pseudocode.
 - [Gemma 4 Model on Hugging Face](https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF)
+- [Hugging Face LLM Course (Tokenizers)](https://huggingface.co/learn/llm-course/en/chapter2/4)  
+- [SentencePiece Tokenizer Documentation](https://github.com/google/sentencepiece)
