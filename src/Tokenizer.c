@@ -221,10 +221,6 @@ TokenizerEncoded_t Tokenizer_Encode(Tokenizer_t tokenizer, const char *input)
         }
     }
 
-    // Note: I'm pretty sure that this does not yet correctly handle data such as special characters that are not in the model's token list. At the moment,
-    //       these end up as the 'unknown' token. I think the correct way would be to instead break down unknown symbols into their individual bytes and
-    //       encode them this way. But for the moment, getting exotic symbols to work is not my priority.
-
     // rank-based BPE tokenizer
     while (finalTokenCount > 1)
     {

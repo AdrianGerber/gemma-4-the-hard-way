@@ -303,6 +303,39 @@ const GGUF_Metadata_t *GGUF_MetadataFindByKey(const GGUF_Metadata_t *metadata, s
     return NULL;
 }
 
+bool GGUF_VerifyHeader(const uint8_t *data, size_t length)
+{
+    if (length < 24)
+    {
+        fprintf(stderr, "GGUF header too short.\n");
+        return NULL;
+    }
+    const uint32_t magic = *((const uint32_t *)data);
+    const uint32_t version = *((const uint32_t *)(data + 4));
+
+    // Basic file format checks
+    if (magic != 0x46554747)
+    {
+        fprintf(stderr, "Wrong magic number.\n");
+        return false;
+    }
+    if (version != 3)
+    {
+        fprintf(stderr, "Unsupported version.\n");
+        return false;
+    }
+    return true;
+}
+
+uint64_t GGUF_GetTensorCount(const uint8_t *data) { return *((const uint64_t *)(data + 8)); }
+
+uint64_t GGUF_GetMetadataCount(const uint8_t *data) { return *((const uint64_t *)(data + 16)); }
+
+const uint8_t *GGUF_SkipHeader(const uint8_t *data)
+{
+    return data + 24;
+}
+
 /******************************************************************************
  * Private Function Implementations
  ******************************************************************************/

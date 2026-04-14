@@ -335,4 +335,38 @@ void GGUF_TensorInfoPrint(GGUF_TensorInfo_t info);
  */
 const GGUF_Metadata_t *GGUF_MetadataFindByKey(const GGUF_Metadata_t *metadata, size_t count, const char *key);
 
+/**
+ * @brief Check that the GGUF header is present and supported.
+ *
+ * @param data Raw bytes.
+ * @param length Number of bytes.
+ * @return true Header correct.
+ * @return false Error.
+ */
+bool GGUF_VerifyHeader(const uint8_t *data, size_t length);
+
+/**
+ * @brief Get the number of tensors in a GGUF file.
+ *
+ * @param data Raw GGUF file bytes.
+ * @return uint64_t Number of tensors.
+ */
+uint64_t GGUF_GetTensorCount(const uint8_t *data);
+
+/**
+ * @brief Get the number of metadata key-value pairs in a GGUF file.
+ *
+ * @param data Raw GGUF file bytes.
+ * @return uint64_t Number of metadata key-value pairs.
+ */
+uint64_t GGUF_GetMetadataCount(const uint8_t *data);
+
+/**
+ * @brief Get a pointer to the first byte after the GGUF header.
+ *
+ * @param data Raw bytes.
+ * @return const uint8_t* First byte after the header (start of metadata entries).
+ */
+const uint8_t *GGUF_SkipHeader(const uint8_t *data);
+
 #endif /* GGUF_H_ */
