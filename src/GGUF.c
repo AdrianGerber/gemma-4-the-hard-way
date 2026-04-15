@@ -234,7 +234,7 @@ void GGUF_MetadataPrint(GGUF_Metadata_t metadata)
     printf("\n");
 }
 
-GGUF_TensorInfo_t GGUF_TensorInfoFromMemory(const uint8_t **data, const uint8_t *startOfFile)
+GGUF_TensorInfo_t GGUF_TensorInfoFromMemory(const uint8_t **data)
 {
 
     GGUF_TensorInfo_t info;
@@ -249,25 +249,28 @@ GGUF_TensorInfo_t GGUF_TensorInfoFromMemory(const uint8_t **data, const uint8_t 
     *data += dimensionsSize;
 
     info.type = GGUF_MetadataValueFromMemory(GGUF_METADATA_VALUE_TYPE_UINT32, data).uint32;
-    uint64_t offset = GGUF_MetadataValueFromMemory(GGUF_METADATA_VALUE_TYPE_UINT64, data).uint64;
+    info.offsetInDataSection = GGUF_MetadataValueFromMemory(GGUF_METADATA_VALUE_TYPE_UINT64, data).uint64;
+    return info;
+}
 
-    switch (info.type)
+void GGUF_TensorGetWeightsFromDataSection(GGUF_TensorInfo_t *tensor, const uint8_t **data)
+{
+
+    switch (tensor->type)
     {
     case GGML_TYPE_F32:
-        info.data.float32 = (const float *)(startOfFile + offset);
+        tensor->data.float32 = (const float *)(*data + tensor->offsetInDataSection);
         break;
     case GGML_TYPE_F16:
-        info.data.float16 = (const float16_t *)(startOfFile + offset);
+        tensor->data.float16 = (const float16_t *)(*data + tensor->offsetInDataSection);
         break;
     case GGML_TYPE_Q8_0:
-        info.data.q8_0 = (const GGUF_Q8_0_t *)(startOfFile + offset);
+        tensor->data.q8_0 = (const GGUF_Q8_0_t *)(*data + tensor->offsetInDataSection);
         break;
     default:
-        fprintf(stderr, "Unknown tensor data type %u\n", info.type);
+        fprintf(stderr, "Unknown tensor data type %u\n", tensor->type);
         assert(false);
     }
-
-    return info;
 }
 
 void GGUF_TensorInfoRelease(GGUF_TensorInfo_t info)
@@ -344,6 +347,36 @@ uint64_t GGUF_GetMetadataCount(const uint8_t *data) { return *((const uint64_t *
 const uint8_t *GGUF_SkipHeader(const uint8_t *data)
 {
     return data + 24;
+}
+
+float GGUF_Float16ToFloat(float16_t input)
+{
+    assert(sizeof(float) == 4);
+
+    // Float 16 conversion taken from libcanard.
+    // Commit 636795f
+    // MIT License.
+    // https://github.com/OpenCyphal/libcanard/blob/636795f4bc395f56af8d2c61d3757b5e762bb9e5/canard.c#L811-L834
+
+    union FP32
+    {
+        uint32_t u;
+        float f;
+    };
+
+    const union FP32 magic = {(254UL - 15UL) << 23};
+    const union FP32 was_inf_nan = {(127UL + 16UL) << 23};
+    union FP32 out;
+
+    out.u = (input & 0x7FFFU) << 13;
+    out.f *= magic.f;
+    if (out.f >= was_inf_nan.f)
+    {
+        out.u |= 255UL << 23;
+    }
+    out.u |= (input & 0x8000UL) << 16;
+
+    return out.f;
 }
 
 /******************************************************************************

@@ -38,3 +38,4 @@ Any accessed external documentation, tutorials and reference material will be de
 - [Hugging Face LLM Course (Tokenizers)](https://huggingface.co/learn/llm-course/en/chapter2/4)  
 - [SentencePiece Tokenizer Documentation](https://github.com/google/sentencepiece)
 - [A Visual Guide to Gemma 4](https://newsletter.maartengrootendorst.com/p/a-visual-guide-to-gemma-4)
+- [Float16 De-Quantization from libcanard](https://github.com/OpenCyphal/libcanard/blob/636795f4bc395f56af8d2c61d3757b5e762bb9e5/canard.c#L811-L834)

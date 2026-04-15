@@ -216,10 +216,8 @@ void test_GGUF_TensorInfoFromMemory(void)
         0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00  // Offset: 1024 (UINT64)
     };
     const uint8_t *ptr = data;
-    uint8_t fakeFile[2048];
-    memset(fakeFile, 0, sizeof(fakeFile));
 
-    GGUF_TensorInfo_t info = GGUF_TensorInfoFromMemory(&ptr, fakeFile);
+    GGUF_TensorInfo_t info = GGUF_TensorInfoFromMemory(&ptr);
 
     TEST_ASSERT_EQUAL_STRING("weight", info.name);
     TEST_ASSERT_EQUAL_UINT32(2, info.dimensionCount);
@@ -227,8 +225,7 @@ void test_GGUF_TensorInfoFromMemory(void)
     TEST_ASSERT_EQUAL_UINT64(128, info.dimensions[0]);
     TEST_ASSERT_EQUAL_UINT64(64, info.dimensions[1]);
     TEST_ASSERT_EQUAL(GGML_TYPE_F32, info.type);
-    TEST_ASSERT_EQUAL_PTR(&fakeFile[1024], info.data.float32);
-    TEST_ASSERT_EQUAL_PTR(&data[sizeof(data)], ptr);
+    TEST_ASSERT_EQUAL_size_t(1024, info.offsetInDataSection);
 
     GGUF_TensorInfoRelease(info);
 }

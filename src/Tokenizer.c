@@ -149,7 +149,7 @@ TokenizerEncoded_t Tokenizer_Encode(Tokenizer_t tokenizer, const char *input)
     clock_gettime(CLOCK_MONOTONIC, &start);
 
     TokenizerEncoded_t output = {
-        .lenght = 0,
+        .length = 0,
         .tokens = NULL,
     };
 
@@ -313,7 +313,7 @@ TokenizerEncoded_t Tokenizer_Encode(Tokenizer_t tokenizer, const char *input)
 
     // Copy the result into a dedicated output buffer. This allows us to remove any
     // temporary tokens that were deleted / merged during tokenization.
-    output.lenght = finalTokenCount;
+    output.length = finalTokenCount;
     output.tokens = malloc(finalTokenCount * sizeof(uint32_t));
     assert(output.tokens);
     size_t outputIndex = 0;
@@ -347,7 +347,7 @@ void Tokenizer_ReleaseEncoded(TokenizerEncoded_t input)
 
 void Tokenizer_DecodeToStdOut(Tokenizer_t tokenizer, TokenizerEncoded_t input, bool groupTokens)
 {
-    for (size_t i = 0; i < input.lenght; i++)
+    for (size_t i = 0; i < input.length; i++)
     {
         if (groupTokens)
         {

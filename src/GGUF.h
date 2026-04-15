@@ -193,7 +193,7 @@ typedef enum
 
 typedef uint16_t float16_t; // This looks so wrong :)
 
-typedef struct
+typedef struct __attribute__((packed))
 {
     float16_t scale;
     int8_t quantized[32];
@@ -221,6 +221,7 @@ typedef struct
     uint64_t *dimensions;
     GGUF_Type_t type;
     GGUF_TensorData_t data;
+    size_t offsetInDataSection;
 } GGUF_TensorInfo_t;
 
 /******************************************************************************
@@ -306,10 +307,17 @@ void GGUF_MetadataPrint(GGUF_Metadata_t metadata);
  *
  * @param data data Pointer to a pointer to the raw GGUF data representing the tensor info section.
  *             Is advanced to past the string data.
- * @param startOfFile Pointer to the beginning of the file.
  * @return GGUF_TensorInfo_t Resulting tensor information. Must be free'd using GGUF_TensorInfoRelease.
  */
-GGUF_TensorInfo_t GGUF_TensorInfoFromMemory(const uint8_t **data, const uint8_t *startOfFile);
+GGUF_TensorInfo_t GGUF_TensorInfoFromMemory(const uint8_t **data);
+
+/**
+ * @brief Finalize a tensor for use by loading the corresponding weights from the tensor_data section in a GGUF file.
+ *
+ * @param tensor Instance.
+ * @param data Address of the first byte of the file's tensor_data section.
+ */
+void GGUF_TensorGetWeightsFromDataSection(GGUF_TensorInfo_t *tensor, const uint8_t **data);
 
 /**
  * @brief Free a tensor information structure.
@@ -378,5 +386,13 @@ uint64_t GGUF_GetMetadataCount(const uint8_t *data);
  * @return const uint8_t* First byte after the header (start of metadata entries).
  */
 const uint8_t *GGUF_SkipHeader(const uint8_t *data);
+
+/**
+ * @brief Convert a float16 number into the C float type.
+ *
+ * @param input 16 bit float value.
+ * @return float Resulting C float.
+ */
+float GGUF_Float16ToFloat(float16_t input);
 
 #endif /* GGUF_H_ */

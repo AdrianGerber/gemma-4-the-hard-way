@@ -66,7 +66,7 @@ typedef struct
  */
 typedef struct
 {
-    size_t lenght;    // Number of tokens in the array
+    size_t length;    // Number of tokens in the array
     uint32_t *tokens; // Dynamically allocated array of token IDs.
 } TokenizerEncoded_t;
 
