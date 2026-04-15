@@ -39,3 +39,6 @@ Any accessed external documentation, tutorials and reference material will be de
 - [SentencePiece Tokenizer Documentation](https://github.com/google/sentencepiece)
 - [A Visual Guide to Gemma 4](https://newsletter.maartengrootendorst.com/p/a-visual-guide-to-gemma-4)
 - [Float16 De-Quantization from libcanard](https://github.com/OpenCyphal/libcanard/blob/636795f4bc395f56af8d2c61d3757b5e762bb9e5/canard.c#L811-L834)
+- [Google Gemini for some technical explanations](https://gemini.google.com/app)
+- [PyTorch RMSNorm Documentation](https://docs.pytorch.org/docs/stable/generated/torch.nn.modules.normalization.RMSNorm.html)
+- [PyTorch GELU Documentation](https://docs.pytorch.org/docs/stable/generated/torch.nn.GELU.html)

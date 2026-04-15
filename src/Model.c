@@ -32,6 +32,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
+#include <time.h>
 
 /******************************************************************************
  * Private Constants and Macros
@@ -48,12 +49,23 @@
 /******************************************************************************
  * Private Function Prototypes
  ******************************************************************************/
-const GGUF_TensorInfo_t *GetTensorForBlock(Model_t *model, size_t blockIndex, const char *tensorName);
-float *ForwardProcess(Model_t *model, RuntimeData_t *runtimeData, uint32_t token, uint32_t position, bool preFill);
-uint32_t SelectTokenFromLogits(Model_t *model, float *logits);
-RuntimeData_t *AllocateRuntimeData(Model_t *model);
-void ReleaseRuntimeData(RuntimeData_t *data);
-void Dequantize(float *output, size_t outputSize, const GGUF_TensorInfo_t *input, size_t inputOffset);
+static const GGUF_TensorInfo_t *GetTensorForBlock(Model_t *model, size_t blockIndex, const char *tensorName);
+static float *ForwardProcess(Model_t *model, RuntimeData_t *runtimeData, uint32_t token, uint32_t position, bool preFill);
+static uint32_t SelectTokenFromLogits(Model_t *model, float *logits);
+static RuntimeData_t *AllocateRuntimeData(Model_t *model);
+static void ReleaseRuntimeData(RuntimeData_t *data);
+static void Dequantize(float *output, size_t outputSize, const GGUF_TensorInfo_t *input, size_t inputOffset);
+static void RunAttention(Model_t *model, RuntimeData_t *runtimeData, uint32_t blockNumber, uint32_t position);
+static void RunFeedForward(Model_t *model, RuntimeData_t *runtimeData, uint32_t blockNumber);
+static float *RunClassifier(Model_t *model, RuntimeData_t *runtimeData);
+
+static void AddFloats(float *out, const float *a, const float *b, size_t count);
+static void ScaleFloats(float *out, const float *in, float factor, size_t count);
+static void CopyFloats(float *destination, const float *source, size_t count);
+static void RMSNorm(float *output, const float *input, const float *weights, size_t count);
+static void MultiplyMatrixAndVector(float *out, size_t outCount, const float *input, size_t inCount, const GGUF_TensorInfo_t *matrix);
+static void ApplyRoPE(float *vector, size_t count, size_t headSize, uint32_t position, float frequencyBase);
+static float DotProduct(float *a, float *b, size_t count);
 
 /******************************************************************************
  * Public Function Implementations
@@ -109,7 +121,7 @@ Model_t *Model_LoadFromGGUF(const uint8_t *data, size_t length)
     if (alignment)
     {
         assert(alignment->type == GGUF_METADATA_VALUE_TYPE_UINT32);
-        model->embeddingLength = alignment->value.uint32;
+        model->alignment = alignment->value.uint32;
     }
     size_t currentFileOffset = ((size_t)(readPointer - data));
     size_t padding = (model->alignment - (currentFileOffset % model->alignment)) % model->alignment;
@@ -173,6 +185,12 @@ Model_t *Model_LoadFromGGUF(const uint8_t *data, size_t length)
     assert(contextSize);
     assert(contextSize->type == GGUF_METADATA_VALUE_TYPE_UINT32);
     model->contextSize = contextSize->value.uint32;
+    if (model->contextSize > 2048)
+    {
+        printf("Limiting context size to 2048 for now.\n");
+        model->contextSize = 2048;
+    }
+
     const GGUF_Metadata_t *embeddingLength = GGUF_MetadataFindByKey(model->metadata, model->metadataCount, "gemma4.embedding_length");
     assert(embeddingLength);
     assert(embeddingLength->type == GGUF_METADATA_VALUE_TYPE_UINT32);
@@ -259,7 +277,7 @@ void Model_Release(Model_t *model)
  * Private Function Implementations
  ******************************************************************************/
 
-const GGUF_TensorInfo_t *GetTensorForBlock(Model_t *model, size_t blockIndex, const char *tensorName)
+static const GGUF_TensorInfo_t *GetTensorForBlock(Model_t *model, size_t blockIndex, const char *tensorName)
 {
     // e.g. blk.34.proj.weight
     char fullName[256];
@@ -267,31 +285,53 @@ const GGUF_TensorInfo_t *GetTensorForBlock(Model_t *model, size_t blockIndex, co
     return GGUF_TensorFindByName(model->tensorInfo, model->tensorInfoCount, fullName);
 }
 
-float *ForwardProcess(Model_t *model, RuntimeData_t *runtimeData, uint32_t token, uint32_t position, bool preFill)
+static float *ForwardProcess(Model_t *model, RuntimeData_t *runtimeData, uint32_t token, uint32_t position, bool preFill)
 {
-    // Get the token's embedding
+    // Performance measurement
+    struct timespec start;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+
+    // Embed the new token.
     assert(model->weights.token_embd->dimensionCount == 2);
     assert(model->weights.token_embd->dimensions[0] == model->embeddingLength);
     assert(model->weights.token_embd->dimensions[1] > token);
     Dequantize(runtimeData->x, model->embeddingLength, model->weights.token_embd, token * model->embeddingLength);
 
-    (void)model;
-    (void)runtimeData;
-    (void)token;
-    (void)position;
+    // I wondered why this scaling is not just backed into the embedding weights, but it seems that the weights themselves
+    // require special statistical properties for mathematical stability during training (e.g. variance). So I guess we
+    // just have to scale them here.
+    ScaleFloats(runtimeData->x, runtimeData->x, sqrtf(model->embeddingLength), model->embeddingLength);
+
+    // Prepare the per-layer token embeddings. These are then successively injected
+    // during the attention block of each layer. This helps the model remember the
+    // original token while information passes through the layers.
+    assert(model->weights.per_layer_token_embd->dimensionCount == 2);
+    assert(model->weights.per_layer_token_embd->dimensions[1] > token);
+    Dequantize(runtimeData->perLayerEmbeddings, model->weights.per_layer_token_embd->dimensions[0], model->weights.per_layer_token_embd, token * model->weights.per_layer_token_embd->dimensions[0]);
+
+    // Run the neural network layers
+    for (size_t layerNumber = 0; layerNumber < model->blockCount; layerNumber++)
+    {
+        RunAttention(model, runtimeData, layerNumber, position);
+        RunFeedForward(model, runtimeData, layerNumber);
+    }
 
     // We can skip calculating the logits during the pre-fill phase.
     float *logits = NULL;
     if (!preFill)
     {
-        logits = runtimeData->logits;
-        logits[model->tokenizer.tokenIdEos] = 1.0f;
+        logits = RunClassifier(model, runtimeData);
     }
 
+    // Statistics to see just how slow the code runs :).
+    struct timespec end;
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    double elapsed = (end.tv_sec + end.tv_nsec / 1000000000.0) - (start.tv_sec + start.tv_nsec / 1000000000.0);
+    printf("\nForward pass took %lfs.\n", elapsed);
     return logits;
 }
 
-uint32_t SelectTokenFromLogits(Model_t *model, float *logits)
+static uint32_t SelectTokenFromLogits(Model_t *model, float *logits)
 {
     // TODO: Implement proper scaling and temperature handling.
 
@@ -309,12 +349,85 @@ uint32_t SelectTokenFromLogits(Model_t *model, float *logits)
     return highestLogitToken;
 }
 
-RuntimeData_t *AllocateRuntimeData(Model_t *model)
+static RuntimeData_t *AllocateRuntimeData(Model_t *model)
 {
     RuntimeData_t *tmp = malloc(sizeof(RuntimeData_t));
     assert(tmp);
     tmp->logits = malloc(model->tokenCount * sizeof(float));
+    assert(tmp->logits);
     tmp->x = malloc(model->embeddingLength * sizeof(float));
+    tmp->residuals = malloc(model->embeddingLength * sizeof(float));
+    tmp->tmp1 = malloc(model->embeddingLength * sizeof(float));
+    tmp->tmp2 = malloc(model->embeddingLength * sizeof(float));
+    tmp->perLayerEmbeddings = malloc(model->weights.per_layer_token_embd->dimensions[0] * sizeof(float));
+    tmp->downProjected = malloc(model->weights.per_layer_token_embd->dimensions[0] / model->blockCount * sizeof(float));
+    assert(tmp->x);
+    assert(tmp->residuals);
+    assert(tmp->tmp1);
+    assert(tmp->tmp2);
+    assert(tmp->perLayerEmbeddings);
+    assert(tmp->downProjected);
+
+    // Allocate buffers for the feed forward network
+    const GGUF_Metadata_t *feedForwardLengths = GGUF_MetadataFindByKey(model->metadata, model->metadataCount, "gemma4.feed_forward_length");
+    assert(feedForwardLengths);
+    assert(feedForwardLengths->type == GGUF_METADATA_VALUE_TYPE_ARRAY);
+    assert(feedForwardLengths->value.array.type == GGUF_METADATA_VALUE_TYPE_INT32);
+    int32_t largestForwardBuffer = 0;
+    for (size_t i = 0; i < feedForwardLengths->value.array.length; i++)
+    {
+        const int32_t value = feedForwardLengths->value.array.array[i].int32;
+        if (value > largestForwardBuffer)
+            largestForwardBuffer = value;
+    }
+    tmp->ffnHiddenGate = malloc((size_t)largestForwardBuffer * sizeof(float));
+    tmp->ffnHiddenUp = malloc((size_t)largestForwardBuffer * sizeof(float));
+    assert(tmp->ffnHiddenGate);
+    assert(tmp->ffnHiddenUp);
+
+    tmp->attentionScores = malloc(model->contextSize * sizeof(float));
+    assert(tmp->attentionScores);
+
+    // Allocate buffers for the QKV attention calculations
+    size_t maxQ = 0;
+    size_t maxK = 0;
+    size_t maxV = 0;
+    tmp->kvCacheOffsets = malloc(model->blockCount * sizeof(size_t));
+    assert(tmp->kvCacheOffsets);
+    size_t kvCacheSize = 0;
+    for (size_t block = 0; block < model->blockCount; block++)
+    {
+        tmp->kvCacheOffsets[block] = kvCacheSize;
+        const GGUF_TensorInfo_t *q = GetTensorForBlock(model, block, "attn_q.weight");
+        const GGUF_TensorInfo_t *k = GetTensorForBlock(model, block, "attn_k.weight");
+        const GGUF_TensorInfo_t *v = GetTensorForBlock(model, block, "attn_v.weight");
+        assert(q && k && v);
+        assert(q->dimensionCount == 2 && k->dimensionCount == 2 && v->dimensionCount == 2);
+        if (q->dimensions[1] > maxQ)
+            maxQ = q->dimensions[1];
+        if (k->dimensions[1] > maxK)
+            maxK = k->dimensions[1];
+        if (v->dimensions[1] > maxV)
+            maxV = v->dimensions[1];
+
+        assert(maxK == maxV);
+        kvCacheSize += model->contextSize * (k->dimensions[1] + v->dimensions[1]);
+    }
+
+    tmp->q = malloc(maxQ * sizeof(float));
+    tmp->k = malloc(maxK * sizeof(float));
+    tmp->v = malloc(maxV * sizeof(float));
+    assert(tmp->q);
+    assert(tmp->k);
+    assert(tmp->v);
+
+    tmp->vMixed = malloc(maxQ * sizeof(float));
+    assert(tmp->vMixed);
+
+    // KV cache
+    printf("Allocating %lu floats for KV cache\n", kvCacheSize);
+    tmp->kvCache = malloc(kvCacheSize * sizeof(float));
+    assert(tmp->kvCache);
     return tmp;
 }
 
@@ -326,11 +439,40 @@ void ReleaseRuntimeData(RuntimeData_t *data)
             free(data->logits);
         if (data->x)
             free(data->x);
+        if (data->residuals)
+            free(data->residuals);
+        if (data->tmp1)
+            free(data->tmp1);
+        if (data->tmp2)
+            free(data->tmp2);
+        if (data->perLayerEmbeddings)
+            free(data->perLayerEmbeddings);
+        if (data->downProjected)
+            free(data->downProjected);
+        if (data->ffnHiddenGate)
+            free(data->ffnHiddenGate);
+        if (data->ffnHiddenUp)
+            free(data->ffnHiddenUp);
+        if (data->q)
+            free(data->q);
+        if (data->k)
+            free(data->k);
+        if (data->v)
+            free(data->v);
+        if (data->kvCache)
+            free(data->kvCache);
+        if (data->kvCacheOffsets)
+            free(data->kvCacheOffsets);
+        if (data->attentionScores)
+            free(data->attentionScores);
+        if (data->vMixed)
+            free(data->vMixed);
+
         free(data);
     }
 }
 
-void Dequantize(float *output, size_t outputSize, const GGUF_TensorInfo_t *input, size_t inputOffset)
+static void Dequantize(float *output, size_t outputSize, const GGUF_TensorInfo_t *input, size_t inputOffset)
 {
     switch (input->type)
     {
@@ -365,4 +507,334 @@ void Dequantize(float *output, size_t outputSize, const GGUF_TensorInfo_t *input
     default:
         assert(false);
     }
+}
+
+static void RunAttention(Model_t *model, RuntimeData_t *runtimeData, uint32_t blockNumber, uint32_t position)
+{
+    const BlockWeights_t *layerWeights = model->weights.blocks + blockNumber;
+
+    // Save the residuals for later
+    CopyFloats(runtimeData->residuals, runtimeData->x, model->embeddingLength);
+    // Normalize the input vector before the attention block
+    assert(layerWeights->attn_norm);
+    assert(layerWeights->attn_norm->type == GGML_TYPE_F32);
+    RMSNorm(runtimeData->tmp1, runtimeData->x, layerWeights->attn_norm->data.float32, model->embeddingLength);
+
+    // Layer-wise token injection.
+    const size_t injectedSize = model->weights.per_layer_token_embd->dimensions[0] / model->blockCount;
+    const float *perLayerEmbeddingSlice = runtimeData->perLayerEmbeddings + blockNumber * injectedSize;
+    MultiplyMatrixAndVector(runtimeData->downProjected, injectedSize, runtimeData->tmp1, model->embeddingLength, layerWeights->inp_gate);
+    AddFloats(runtimeData->downProjected, runtimeData->downProjected, perLayerEmbeddingSlice, injectedSize);
+    MultiplyMatrixAndVector(runtimeData->tmp2, model->embeddingLength, runtimeData->downProjected, injectedSize, layerWeights->proj);
+    AddFloats(runtimeData->tmp1, runtimeData->tmp1, runtimeData->tmp2, model->embeddingLength);
+
+    // QKV projections
+    assert(layerWeights->attn_q);
+    assert(layerWeights->attn_k);
+    assert(layerWeights->attn_v);
+    assert(layerWeights->attn_q->dimensionCount == 2);
+    assert(layerWeights->attn_k->dimensionCount == 2);
+    assert(layerWeights->attn_v->dimensionCount == 2);
+    MultiplyMatrixAndVector(runtimeData->q, layerWeights->attn_q->dimensions[1], runtimeData->tmp1, model->embeddingLength, layerWeights->attn_q);
+    MultiplyMatrixAndVector(runtimeData->k, layerWeights->attn_k->dimensions[1], runtimeData->tmp1, model->embeddingLength, layerWeights->attn_k);
+    MultiplyMatrixAndVector(runtimeData->v, layerWeights->attn_v->dimensions[1], runtimeData->tmp1, model->embeddingLength, layerWeights->attn_v);
+    assert(layerWeights->attn_q_norm);
+    assert(layerWeights->attn_k_norm);
+    assert(layerWeights->attn_q_norm->type == GGML_TYPE_F32);
+    assert(layerWeights->attn_k_norm->type == GGML_TYPE_F32);
+    RMSNorm(runtimeData->q, runtimeData->q, layerWeights->attn_q_norm->data.float32, layerWeights->attn_q->dimensions[1]);
+    RMSNorm(runtimeData->k, runtimeData->k, layerWeights->attn_k_norm->data.float32, layerWeights->attn_k->dimensions[1]);
+
+    // Apply RoPe.
+    // TODO: calculate these constants!
+    const bool globalAttention = (blockNumber % 5 == 4);
+    const size_t headDimension = globalAttention ? 512 : 256;
+    const size_t tokenKVSize = layerWeights->attn_k->dimensions[1] + layerWeights->attn_v->dimensions[1];
+    const float ropeBase = globalAttention ? 1000000.0f : 10000.0f;
+    ApplyRoPE(runtimeData->q, layerWeights->attn_q->dimensions[1], headDimension, position, ropeBase);
+    ApplyRoPE(runtimeData->k, layerWeights->attn_k->dimensions[1], headDimension, position, ropeBase);
+
+    // Save values to kv cache
+    const size_t kSize = layerWeights->attn_k->dimensions[1];
+    const size_t vSize = layerWeights->attn_v->dimensions[1];
+    const size_t totalSize = kSize + vSize;
+    const size_t cacheStartOffset = runtimeData->kvCacheOffsets[blockNumber];
+    const size_t cachePositionOffset = position * totalSize;
+    float *kvStart = runtimeData->kvCache + cacheStartOffset + cachePositionOffset;
+    memcpy(kvStart, runtimeData->k, kSize * sizeof(float));
+    memcpy(kvStart + kSize, runtimeData->v, vSize * sizeof(float));
+
+    // Compute the attention
+    const size_t qHeads = layerWeights->attn_q->dimensions[1] / headDimension;
+    const size_t kvHeads = layerWeights->attn_k->dimensions[1] / headDimension;
+    assert(qHeads % kvHeads == 0);
+    const size_t qPerKv = qHeads / kvHeads;
+    const float scale = 1.0f / sqrtf(headDimension);
+    // Decide how far back to look
+    const size_t startPos = (!globalAttention && position > 512) ? position - 512 : 0;
+    // Process query heads
+    for (size_t head = 0; head < qHeads; head++)
+    {
+        // Identify memory locations
+        const size_t kvHeadIndex = head / qPerKv;
+        float *qHead = runtimeData->q + (head * headDimension);
+        float *outputHead = runtimeData->vMixed + (head * headDimension);
+
+        // Quantify similarity
+        for (size_t pos = startPos; pos <= position; pos++)
+        {
+            float *kHead = runtimeData->kvCache + runtimeData->kvCacheOffsets[blockNumber] + (pos * tokenKVSize) + (kvHeadIndex * headDimension);
+            runtimeData->attentionScores[pos] = DotProduct(kHead, qHead, headDimension) * scale;
+        }
+
+        // Softmax
+        float maxScore = -INFINITY;
+        for (size_t pos = startPos; pos <= position; pos++)
+        {
+            if (runtimeData->attentionScores[pos] > maxScore)
+                maxScore = runtimeData->attentionScores[pos];
+        }
+        float sum = 0.0f;
+        for (size_t pos = startPos; pos <= position; pos++)
+        {
+            runtimeData->attentionScores[pos] = expf(runtimeData->attentionScores[pos] - maxScore);
+            sum += runtimeData->attentionScores[pos];
+        }
+        for (size_t pos = startPos; pos <= position; pos++)
+        {
+            runtimeData->attentionScores[pos] /= sum;
+        }
+
+        // Mix the values
+        memset(outputHead, 0, headDimension * sizeof(float));
+        for (size_t pos = startPos; pos <= position; pos++)
+        {
+            float *vHead = runtimeData->kvCache + runtimeData->kvCacheOffsets[blockNumber] + (pos * tokenKVSize) + kSize + (kvHeadIndex * headDimension);
+            for (size_t i = 0; i < headDimension; i++)
+            {
+                outputHead[i] += runtimeData->attentionScores[pos] * vHead[i];
+            }
+        }
+    }
+
+    // Trap NaNs inside the attention pool
+    bool vMixedCorrupted = false;
+    for (size_t i = 0; i < layerWeights->attn_q->dimensions[1]; i++)
+    {
+        if (isnan(runtimeData->vMixed[i]) || isinf(runtimeData->vMixed[i]))
+        {
+            printf("FATAL: vMixed contains NaN/Inf at index %zu!\n", i);
+            vMixedCorrupted = true;
+            break; // Stop at the first corrupted float
+        }
+    }
+
+    if (!vMixedCorrupted)
+    {
+        printf("vMixed is 100%% clean. The math is exploding inside MultiplyMatrixAndVector!\n");
+    }
+
+    // Output projection
+    assert(layerWeights->attn_output);
+    MultiplyMatrixAndVector(runtimeData->tmp2, model->embeddingLength, runtimeData->vMixed, layerWeights->attn_q->dimensions[1], layerWeights->attn_output);
+    printf("1. After attn_output proj: %f\n", runtimeData->tmp2[0]);
+
+    // Post-normalization
+    assert(layerWeights->post_attention_norm);
+    assert(layerWeights->post_attention_norm->type == GGML_TYPE_F32);
+    RMSNorm(runtimeData->tmp2, runtimeData->tmp2, layerWeights->post_attention_norm->data.float32, model->embeddingLength);
+    printf("2. After post_attn_norm: %f\n", runtimeData->tmp2[0]);
+
+    assert(layerWeights->layer_output_scale);
+    assert(layerWeights->layer_output_scale->dimensionCount == 1);
+    assert(layerWeights->layer_output_scale->dimensions[0] == 1);
+    assert(layerWeights->layer_output_scale->type == GGML_TYPE_F32);
+    ScaleFloats(runtimeData->tmp2, runtimeData->tmp2, layerWeights->layer_output_scale->data.float32[0], model->embeddingLength);
+    printf("3. After layer scale: %f\n", runtimeData->tmp2[0]);
+
+    // Add the residuals back in
+    AddFloats(runtimeData->x, runtimeData->residuals, runtimeData->tmp2, model->embeddingLength);
+    printf("4. After adding residuals: %f\n", runtimeData->x[0]);
+}
+
+static void RunFeedForward(Model_t *model, RuntimeData_t *runtimeData, uint32_t blockNumber)
+{
+    const BlockWeights_t *layerWeights = model->weights.blocks + blockNumber;
+
+    // Save the residuals for later
+    CopyFloats(runtimeData->residuals, runtimeData->x, model->embeddingLength);
+
+    // Normalize the input vector before feeding it into the network
+    assert(layerWeights->ffn_norm);
+    assert(layerWeights->ffn_norm->type == GGML_TYPE_F32);
+    RMSNorm(runtimeData->tmp1, runtimeData->x, layerWeights->ffn_norm->data.float32, model->embeddingLength);
+    printf("5. After FFN norm: %f\n", runtimeData->tmp1[0]);
+
+    // Expand to the hidden dimension, apply the activation function and then project back down.
+    // The size differs by layer. Buffers ffnHiddenGate and ffnHiddenUp are allocated for the largest case.
+    assert(layerWeights->ffn_gate->dimensionCount == 2);
+    const size_t hiddenDimension = layerWeights->ffn_gate->dimensions[1];
+    MultiplyMatrixAndVector(runtimeData->ffnHiddenGate, hiddenDimension, runtimeData->tmp1, model->embeddingLength, layerWeights->ffn_gate);
+    MultiplyMatrixAndVector(runtimeData->ffnHiddenUp, hiddenDimension, runtimeData->tmp1, model->embeddingLength, layerWeights->ffn_up);
+    for (size_t i = 0; i < hiddenDimension; i++)
+    {
+        const float x = runtimeData->ffnHiddenGate[i];
+        const float gelu = x * 0.5 * (1.0f + erff(x / 1.41421356f));
+        runtimeData->ffnHiddenGate[i] = gelu * runtimeData->ffnHiddenUp[i];
+    }
+    MultiplyMatrixAndVector(runtimeData->tmp2, model->embeddingLength, runtimeData->ffnHiddenGate, hiddenDimension, layerWeights->ffn_down);
+
+    // Post-normalization after FFN
+    assert(layerWeights->post_ffw_norm);
+    assert(layerWeights->post_ffw_norm->type == GGML_TYPE_F32);
+    RMSNorm(runtimeData->tmp2, runtimeData->tmp2, layerWeights->post_ffw_norm->data.float32, model->embeddingLength);
+
+    assert(layerWeights->layer_output_scale);
+    assert(layerWeights->layer_output_scale->dimensionCount == 1);
+    assert(layerWeights->layer_output_scale->dimensions[0] == 1);
+    assert(layerWeights->layer_output_scale->type == GGML_TYPE_F32);
+    ScaleFloats(runtimeData->tmp2, runtimeData->tmp2, layerWeights->layer_output_scale->data.float32[0], model->embeddingLength);
+
+    // Add the residuals back in
+    AddFloats(runtimeData->x, runtimeData->residuals, runtimeData->tmp2, model->embeddingLength);
+
+    // Post-normalization on the final combined state
+    // assert(layerWeights->post_norm);
+    // assert(layerWeights->post_norm->type == GGML_TYPE_F32);
+    // RMSNorm(runtimeData->x, runtimeData->x, layerWeights->post_norm->data.float32, model->embeddingLength);
+}
+
+static float *RunClassifier(Model_t *model, RuntimeData_t *runtimeData)
+{
+    // Normalization
+    assert(model->weights.output_norm);
+    assert(model->weights.output_norm->type == GGML_TYPE_F32);
+    RMSNorm(runtimeData->tmp1, runtimeData->x, model->weights.output_norm->data.float32, model->embeddingLength);
+
+    // Prepare the LM head tensor (same as token_embd due to 'weight tying')
+    const GGUF_TensorInfo_t *head = model->weights.token_embd;
+    assert(head->dimensionCount == 2);
+    assert(model->tokenCount == head->dimensions[1]);
+    MultiplyMatrixAndVector(runtimeData->logits, head->dimensions[1], runtimeData->tmp1, model->embeddingLength, head);
+    return runtimeData->logits;
+}
+
+static void AddFloats(float *out, const float *a, const float *b, size_t count)
+{
+    for (size_t i = 0; i < count; i++)
+    {
+        out[i] = a[i] + b[i];
+    }
+}
+
+static void ScaleFloats(float *out, const float *in, float factor, size_t count)
+{
+    for (size_t i = 0; i < count; i++)
+    {
+        out[i] = factor * in[i];
+    }
+}
+
+static void CopyFloats(float *destination, const float *source, size_t count)
+{
+    memcpy(destination, source, count * sizeof(float));
+}
+
+static void RMSNorm(float *output, const float *input, const float *weights, size_t count)
+{
+    float sumOfSquares = 0.0f;
+    for (size_t i = 0; i < count; i++)
+    {
+        sumOfSquares += input[i] * input[i];
+    }
+
+    // Epsilon prevents numerical issues when the result is close to 0.
+    const float epsilon = 0.000001f;
+    const float normalizingFactor = 1.0f / sqrtf(sumOfSquares / count + epsilon);
+
+    for (size_t i = 0; i < count; i++)
+    {
+        // Scale by the computed factor while also introducing the learned weights.
+        // From a few web searches, it looks like pure normalization would be too
+        // restrictive for the neural network. Adding an additional step multiplying by
+        // the learned weights allows important features to be highlighted / preserved better.
+        output[i] = (input[i] * normalizingFactor) * (1.0f + weights[i]);
+    }
+}
+
+static void MultiplyMatrixAndVector(float *out, size_t outCount, const float *input, size_t inCount, const GGUF_TensorInfo_t *matrix)
+{
+    assert(matrix->dimensionCount == 2);
+    const size_t rows = matrix->dimensions[1];
+    const size_t cols = matrix->dimensions[0];
+
+    assert(rows == outCount);
+    assert(cols == inCount);
+
+    if (matrix->type == GGML_TYPE_Q8_0)
+    {
+        // Only support sizes that are a multiple of quantization block size for now.
+        const size_t blockSize = sizeof(matrix->data.q8_0->quantized) / sizeof(matrix->data.q8_0->quantized[0]);
+        assert(cols % blockSize == 0);
+        const size_t blocksPerRow = cols / blockSize;
+
+        // Calculate each row of the output vector as the dot product between input vector
+        // and the column of the matrix.
+        for (size_t row = 0; row < rows; row++)
+        {
+            float dotProduct = 0.0f;
+            const GGUF_Q8_0_t *rowBlocks = matrix->data.q8_0 + blocksPerRow * row;
+            for (size_t block = 0; block < blocksPerRow; block++)
+            {
+                const float scale = GGUF_Float16ToFloat(rowBlocks[block].scale);
+                for (size_t quantizedIndex = 0; quantizedIndex < blockSize; quantizedIndex++)
+                {
+                    const float matrixWeight = scale * (float)rowBlocks[block].quantized[quantizedIndex];
+                    dotProduct += input[block * blockSize + quantizedIndex] * matrixWeight;
+                }
+            }
+            out[row] = dotProduct;
+        }
+    }
+    else
+    {
+        assert(false);
+    }
+}
+
+static void ApplyRoPE(float *vector, size_t count, size_t headSize, uint32_t position, float frequencyBase)
+{
+    assert(count % headSize == 0);
+    size_t numberOfHeads = count / headSize;
+
+    for (size_t headIndex = 0; headIndex < numberOfHeads; headIndex++)
+    {
+        float *head = vector + headIndex * headSize;
+
+        // Rotate pairs of x/y
+        for (size_t i = 0; i < headSize; i += 2)
+        {
+            const float exponent = (float)i / headSize;
+            const float inverseFrequency = 1.0f / powf(frequencyBase, exponent);
+            const float theta = (float)position * inverseFrequency;
+
+            const float cosTheta = cosf(theta);
+            const float sinTheta = sinf(theta);
+            const float x = head[i];
+            const float y = head[i + 1];
+
+            head[i] = x * cosTheta - y * sinTheta;
+            head[i + 1] = x * sinTheta + y * cosTheta;
+        }
+    }
+}
+
+static float DotProduct(float *a, float *b, size_t count)
+{
+    float sum = 0.0f;
+    for (size_t i = 0; i < count; i++)
+    {
+        sum += a[i] * b[i];
+    }
+    return sum;
 }

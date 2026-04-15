@@ -68,6 +68,19 @@ typedef struct
 {
     float *logits;
     float *x;
+    float *residuals;
+    float *tmp1, *tmp2;
+    float *perLayerEmbeddings;
+    float *downProjected;
+    float *ffnHiddenGate;
+    float *ffnHiddenUp;
+    float *q;
+    float *k;
+    float *v;
+    float *kvCache;
+    size_t *kvCacheOffsets;
+    float *attentionScores;
+    float *vMixed;
 } RuntimeData_t;
 
 /**
