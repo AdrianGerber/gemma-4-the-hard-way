@@ -60,9 +60,11 @@ static void RunFeedForward(Model_t *model, RuntimeData_t *runtimeData, uint32_t 
 static float *RunClassifier(Model_t *model, RuntimeData_t *runtimeData);
 
 static void AddFloats(float *out, const float *a, const float *b, size_t count);
+static void MultiplyFloats(float *out, const float *a, const float *b, size_t count);
 static void ScaleFloats(float *out, const float *in, float factor, size_t count);
 static void CopyFloats(float *destination, const float *source, size_t count);
-static void RMSNorm(float *output, const float *input, const float *weights, size_t count);
+static void RMSNorm___old(float *output, const float *input, const float *weights, size_t count);
+static void RMSNorm(float *output, const float *input, size_t count);
 static void MultiplyMatrixAndVector(float *out, size_t outCount, const float *input, size_t inCount, const GGUF_TensorInfo_t *matrix);
 static void ApplyRoPE(float *vector, size_t count, size_t headSize, uint32_t position, float frequencyBase);
 static float DotProduct(float *a, float *b, size_t count);
@@ -525,37 +527,56 @@ static void RunAttention(Model_t *model, RuntimeData_t *runtimeData, uint32_t bl
 {
     const BlockWeights_t *layerWeights = model->weights.blocks + blockNumber;
 
-    // Save the residuals for later
-    CopyFloats(runtimeData->residuals, runtimeData->x, model->embeddingLength);
-    // Normalize the input vector before the attention block
-    assert(layerWeights->attn_norm);
+    /******************************************************************************
+     * Normalization
+     ******************************************************************************/
+    RMSNorm(runtimeData->tmp1, runtimeData->x, model->embeddingLength);
+
     assert(layerWeights->attn_norm->type == GGML_TYPE_F32);
-    RMSNorm(runtimeData->tmp1, runtimeData->x, layerWeights->attn_norm->data.float32, model->embeddingLength);
+    assert(layerWeights->attn_norm->dimensions[0] == model->embeddingLength);
+    MultiplyFloats(runtimeData->tmp1, runtimeData->tmp1, layerWeights->attn_norm->data.float32, model->embeddingLength);
 
-    // Layer-wise token injection.
-    const size_t injectedSize = model->weights.per_layer_token_embd->dimensions[0] / model->blockCount;
-    const float *perLayerEmbeddingSlice = runtimeData->perLayerEmbeddings + blockNumber * injectedSize;
-    MultiplyMatrixAndVector(runtimeData->downProjected, injectedSize, runtimeData->tmp1, model->embeddingLength, layerWeights->inp_gate);
-    AddFloats(runtimeData->downProjected, runtimeData->downProjected, perLayerEmbeddingSlice, injectedSize);
-    MultiplyMatrixAndVector(runtimeData->tmp2, model->embeddingLength, runtimeData->downProjected, injectedSize, layerWeights->proj);
-    AddFloats(runtimeData->tmp1, runtimeData->tmp1, runtimeData->tmp2, model->embeddingLength);
-
-    // QKV projections
-    assert(layerWeights->attn_q);
-    assert(layerWeights->attn_k);
-    assert(layerWeights->attn_v);
+    /******************************************************************************
+     * Compute Query, Key and Value Vectors
+     ******************************************************************************/
+    // General preparations
     assert(layerWeights->attn_q->dimensionCount == 2);
     assert(layerWeights->attn_k->dimensionCount == 2);
     assert(layerWeights->attn_v->dimensionCount == 2);
-    MultiplyMatrixAndVector(runtimeData->q, layerWeights->attn_q->dimensions[1], runtimeData->tmp1, model->embeddingLength, layerWeights->attn_q);
-    MultiplyMatrixAndVector(runtimeData->k, layerWeights->attn_k->dimensions[1], runtimeData->tmp1, model->embeddingLength, layerWeights->attn_k);
-    MultiplyMatrixAndVector(runtimeData->v, layerWeights->attn_v->dimensions[1], runtimeData->tmp1, model->embeddingLength, layerWeights->attn_v);
-    assert(layerWeights->attn_q_norm);
-    assert(layerWeights->attn_k_norm);
+    assert(layerWeights->attn_k_norm->dimensionCount == 1);
+    const size_t qDimension = layerWeights->attn_q->dimensions[1];
+    const size_t kDimension = layerWeights->attn_k->dimensions[1];
+    const size_t vDimension = layerWeights->attn_v->dimensions[1];
+    const size_t headDimension = layerWeights->attn_k_norm->dimensions[0];
+    const size_t headCount = qDimension / headDimension;
     assert(layerWeights->attn_q_norm->type == GGML_TYPE_F32);
+    assert(layerWeights->attn_q_norm->dimensions[0] == headDimension);
+
+    // Apply projection matrices
+    MultiplyMatrixAndVector(runtimeData->q, qDimension, runtimeData->tmp1, model->embeddingLength, layerWeights->attn_q);
+    MultiplyMatrixAndVector(runtimeData->k, kDimension, runtimeData->tmp1, model->embeddingLength, layerWeights->attn_k);
+    MultiplyMatrixAndVector(runtimeData->v, vDimension, runtimeData->tmp1, model->embeddingLength, layerWeights->attn_v);
+
+    // Normalization
+    for (size_t head = 0; head < headCount; head++)
+    {
+        const size_t offset = head * headDimension;
+        RMSNorm(runtimeData->q + offset, runtimeData->q + offset, headDimension);
+        MultiplyFloats(runtimeData->q + offset, runtimeData->q + offset, layerWeights->attn_q_norm->data.float32, headDimension);
+    }
+
+    RMSNorm(runtimeData->k, runtimeData->k, kDimension);
+    RMSNorm(runtimeData->v, runtimeData->v, vDimension);
     assert(layerWeights->attn_k_norm->type == GGML_TYPE_F32);
-    RMSNorm(runtimeData->q, runtimeData->q, layerWeights->attn_q_norm->data.float32, layerWeights->attn_q->dimensions[1]);
-    RMSNorm(runtimeData->k, runtimeData->k, layerWeights->attn_k_norm->data.float32, layerWeights->attn_k->dimensions[1]);
+    assert(layerWeights->attn_k_norm->dimensions[0] == kDimension);
+    MultiplyFloats(runtimeData->k, runtimeData->k, layerWeights->attn_k_norm->data.float32, kDimension);
+
+    // RoPE
+    const float ropeBase = (headDimension == 512) ? 1000000.0f : 10000.0f;
+    ApplyRoPE(runtimeData->q, qDimension, headDimension, position, ropeBase);
+    ApplyRoPE(runtimeData->k, kDimension, headDimension, position, ropeBase);
+
+    // <---------------------- Verified against llama.cpp ------------------>
 
     // Apply RoPe.
     // TODO: calculate these constants!
@@ -738,6 +759,13 @@ static void AddFloats(float *out, const float *a, const float *b, size_t count)
         out[i] = a[i] + b[i];
     }
 }
+static void MultiplyFloats(float *out, const float *a, const float *b, size_t count)
+{
+    for (size_t i = 0; i < count; i++)
+    {
+        out[i] = a[i] * b[i];
+    }
+}
 
 static void ScaleFloats(float *out, const float *in, float factor, size_t count)
 {
@@ -752,25 +780,47 @@ static void CopyFloats(float *destination, const float *source, size_t count)
     memcpy(destination, source, count * sizeof(float));
 }
 
-static void RMSNorm(float *output, const float *input, const float *weights, size_t count)
+static void RMSNorm___old(float *output, const float *input, const float *weights, size_t count)
 {
-    float sumOfSquares = 0.0f;
+    double sum = 0.0;
     for (size_t i = 0; i < count; i++)
     {
-        sumOfSquares += input[i] * input[i];
+        sum += (double)input[i] * input[i];
     }
 
-    // Epsilon prevents numerical issues when the result is close to 0.
-    const float epsilon = 0.000001f;
-    const float normalizingFactor = 1.0f / sqrtf(sumOfSquares / count + epsilon);
-
+    float normalizingFactor = 1.0f / sqrtf((float)(sum / count) + 1e-6f);
+    if (weights)
+    {
     for (size_t i = 0; i < count; i++)
     {
         // Scale by the computed factor while also introducing the learned weights.
         // From a few web searches, it looks like pure normalization would be too
         // restrictive for the neural network. Adding an additional step multiplying by
         // the learned weights allows important features to be highlighted / preserved better.
-        output[i] = (input[i] * normalizingFactor) * (1.0f + weights[i]);
+            output[i] = (input[i] * normalizingFactor) * (weights[i]);
+        }
+    }
+    else
+    {
+        for (size_t i = 0; i < count; i++)
+        {
+            output[i] = input[i] * normalizingFactor;
+        }
+    }
+}
+
+static void RMSNorm(float *output, const float *input, size_t count)
+{
+    double sum = 0.0;
+    for (size_t i = 0; i < count; i++)
+    {
+        sum += (double)input[i] * input[i];
+    }
+    float normalizingFactor = 1.0f / sqrtf((float)(sum / count) + 1e-6f);
+
+    for (size_t i = 0; i < count; i++)
+    {
+        output[i] = (input[i] * normalizingFactor);
     }
 }
 
