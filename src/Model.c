@@ -222,8 +222,9 @@ void Model_GenerateCompletionsToStdOut(Model_t *model, const char *prompt)
     float *logits = ForwardProcess(model, runtimeData, tokenIds.tokens[position], position, false);
     assert(logits);
     uint32_t token = SelectTokenFromLogits(model, logits);
-    Tokenizer_DecodeToStdOut(model->tokenizer, (TokenizerEncoded_t){.length = 1, .tokens = &token}, true);
+    Tokenizer_DecodeToStdOut(model->tokenizer, (TokenizerEncoded_t){.length = 1, .tokens = &token}, false);
     position++;
+    fflush(stdout);
 
     // Start predicting more future tokens by feeding the model's output back into itself.
     while (token != model->tokenizer.tokenIdEos)
@@ -231,12 +232,15 @@ void Model_GenerateCompletionsToStdOut(Model_t *model, const char *prompt)
         logits = ForwardProcess(model, runtimeData, token, position, false);
         assert(logits);
         token = SelectTokenFromLogits(model, logits);
-        Tokenizer_DecodeToStdOut(model->tokenizer, (TokenizerEncoded_t){.length = 1, .tokens = &token}, true);
+        Tokenizer_DecodeToStdOut(model->tokenizer, (TokenizerEncoded_t){.length = 1, .tokens = &token}, false);
         position++;
+
+        fflush(stdout);
 
         if (position >= model->contextSize)
         {
             printf("\n Context size exceeded! Stopping.\n");
+            break;
         }
     }
     printf("\n");
@@ -287,31 +291,39 @@ static const GGUF_TensorInfo_t *GetTensorForBlock(Model_t *model, size_t blockIn
 
 static float *ForwardProcess(Model_t *model, RuntimeData_t *runtimeData, uint32_t token, uint32_t position, bool preFill)
 {
-    // Performance measurement
-    struct timespec start;
-    clock_gettime(CLOCK_MONOTONIC, &start);
+    /******************************************************************************
+     * Token Embedding
+     ******************************************************************************/
+    // Embed the new token. The token is sent to the model as the initial state, but also
+    // fed back in partially on each layer. For this there exist two different embeddings
+    // that we need to load:
 
-    // Embed the new token.
+    // Main token embedding
     assert(model->weights.token_embd->dimensionCount == 2);
     assert(model->weights.token_embd->dimensions[0] == model->embeddingLength);
     assert(model->weights.token_embd->dimensions[1] > token);
     Dequantize(runtimeData->x, model->embeddingLength, model->weights.token_embd, token * model->embeddingLength);
+    ScaleFloats(runtimeData->x, runtimeData->x, sqrtf((float)model->embeddingLength), model->embeddingLength);
 
-    // I wondered why this scaling is not just backed into the embedding weights, but it seems that the weights themselves
-    // require special statistical properties for mathematical stability during training (e.g. variance). So I guess we
-    // just have to scale them here.
-    ScaleFloats(runtimeData->x, runtimeData->x, sqrtf(model->embeddingLength), model->embeddingLength);
-
-    // Prepare the per-layer token embeddings. These are then successively injected
-    // during the attention block of each layer. This helps the model remember the
-    // original token while information passes through the layers.
+    // Per-layer token embeddings. These are successively injected during the attention
+    // block of each layer. This helps the model remember the original token while
+    // information passes through the layers. We prepare all the data at this point,
+    // but each layer will only inject 256 bytes at a time.
     assert(model->weights.per_layer_token_embd->dimensionCount == 2);
     assert(model->weights.per_layer_token_embd->dimensions[1] > token);
+    const size_t injectedEmbeddingSizeTotal = model->weights.per_layer_token_embd->dimensions[0];
+    assert(injectedEmbeddingSizeTotal % model->blockCount == 0);
+    const size_t injectedEmbeddingSizePerLayer = injectedEmbeddingSizeTotal / model->blockCount;
     Dequantize(runtimeData->perLayerEmbeddings, model->weights.per_layer_token_embd->dimensions[0], model->weights.per_layer_token_embd, token * model->weights.per_layer_token_embd->dimensions[0]);
+    ScaleFloats(runtimeData->perLayerEmbeddings, runtimeData->perLayerEmbeddings, sqrtf((float)injectedEmbeddingSizePerLayer), injectedEmbeddingSizeTotal);
 
+    /******************************************************************************
+     * Layer Processing
+     ******************************************************************************/
     // Run the neural network layers
     for (size_t layerNumber = 0; layerNumber < model->blockCount; layerNumber++)
     {
+        // <---------------------- Verified against llama.cpp ------------------>
         RunAttention(model, runtimeData, layerNumber, position);
         RunFeedForward(model, runtimeData, layerNumber);
     }
