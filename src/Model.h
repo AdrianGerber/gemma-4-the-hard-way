@@ -71,6 +71,7 @@ typedef struct
     float *residuals;
     float *tmp1, *tmp2;
     float *perLayerEmbeddings;
+    float *allLayerModelProjections;
     float *downProjected;
     float *ffnHiddenGate;
     float *ffnHiddenUp;

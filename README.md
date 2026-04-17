@@ -42,3 +42,6 @@ Any accessed external documentation, tutorials and reference material will be de
 - [Google Gemini for some technical explanations](https://gemini.google.com/app)
 - [PyTorch RMSNorm Documentation](https://docs.pytorch.org/docs/stable/generated/torch.nn.modules.normalization.RMSNorm.html)
 - [PyTorch GELU Documentation](https://docs.pytorch.org/docs/stable/generated/torch.nn.GELU.html)
+- [Mastering Gemma 4: A Comprehensive Deep Dive into Google's Next-Generation Open Model Architecture and Deployment](https://dev.to/jubinsoni/mastering-gemma-4-a-comprehensive-deep-dive-into-googles-next-generation-open-model-architecture-2f91)
+- [llama.cpp](https://github.com/ggml-org/llama.cpp) to dump known-good internal layer vectors to debug against.
+- [Wikipedia: Attention (Machine Learning)](https://en.wikipedia.org/wiki/Attention_(machine_learning))
