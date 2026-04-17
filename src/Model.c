@@ -38,6 +38,25 @@
  * Private Constants and Macros
  ******************************************************************************/
 
+#define DEBUG_PRINT 0
+
+#if DEBUG_PRINT
+#define STRINGIFY(x) #x
+#define TOSTRING(x) STRINGIFY(x)
+// Ugly but very, very useful debug macro :)
+#define DEBUG_VECTOR(tag, vector, length)                                                                                                                                                       \
+    {                                                                                                                                                                                           \
+        float tmpSum123 = 0.0f;                                                                                                                                                                 \
+        for (size_t i = 0; i < length; i++)                                                                                                                                                     \
+            tmpSum123 += vector[i];                                                                                                                                                             \
+        printf("%04u %-20s %-30s sum=%06f            value=[%f, %f, ..., %f, %f]\n", __LINE__, tag, TOSTRING(vector), tmpSum123, vector[0], vector[1], vector[length - 2], vector[length - 1]); \
+    }
+#else
+
+#define DEBUG_VECTOR(tag, vector, length)
+
+#endif
+
 /******************************************************************************
  * Private Type Definitions
  ******************************************************************************/
@@ -221,7 +240,7 @@ void Model_GenerateCompletionsToStdOut(Model_t *model, const char *prompt)
     }
 
     // Generate the first new token from the last input token.
-    printf("Generating Predictions:\n");
+    printf("Generating Predictions:\n\n");
     float *logits = ForwardProcess(model, runtimeData, tokenIds.tokens[position], position, false);
     assert(logits);
     uint32_t token = SelectTokenFromLogits(model, logits);
@@ -307,6 +326,7 @@ static float *ForwardProcess(Model_t *model, RuntimeData_t *runtimeData, uint32_
     assert(model->weights.token_embd->dimensions[1] > token);
     Dequantize(runtimeData->x, model->embeddingLength, model->weights.token_embd, token * model->embeddingLength);
     ScaleFloats(runtimeData->x, runtimeData->x, sqrtf((float)model->embeddingLength), model->embeddingLength);
+    DEBUG_VECTOR("", runtimeData->x, model->embeddingLength);
 
     // Per-layer token embeddings. These are successively injected during the attention
     // block of each layer. This helps the model remember the original token while
@@ -319,8 +339,11 @@ static float *ForwardProcess(Model_t *model, RuntimeData_t *runtimeData, uint32_
     const size_t injectedEmbeddingSizePerLayer = injectedEmbeddingSizeTotal / model->blockCount;
     Dequantize(runtimeData->perLayerEmbeddings, model->weights.per_layer_token_embd->dimensions[0], model->weights.per_layer_token_embd, token * model->weights.per_layer_token_embd->dimensions[0]);
     ScaleFloats(runtimeData->perLayerEmbeddings, runtimeData->perLayerEmbeddings, sqrtf((float)injectedEmbeddingSizePerLayer), injectedEmbeddingSizeTotal);
+    DEBUG_VECTOR("", runtimeData->perLayerEmbeddings, injectedEmbeddingSizeTotal);
+
     MultiplyMatrixAndVector(runtimeData->allLayerModelProjections, injectedEmbeddingSizeTotal, runtimeData->x, model->embeddingLength, model->weights.per_layer_model_proj);
     ScaleFloats(runtimeData->allLayerModelProjections, runtimeData->allLayerModelProjections, 1.0f / sqrtf(model->embeddingLength), injectedEmbeddingSizeTotal);
+    DEBUG_VECTOR("", runtimeData->allLayerModelProjections, injectedEmbeddingSizeTotal);
 
     /******************************************************************************
      * Layer Processing
@@ -328,12 +351,14 @@ static float *ForwardProcess(Model_t *model, RuntimeData_t *runtimeData, uint32_
     // Run the neural network layers
     for (size_t layerNumber = 0; layerNumber < model->blockCount; layerNumber++)
     {
+#if DEBUG_PRINT
+        printf("\n--- Layer %lu ---\n", layerNumber);
+#endif
         RunAttention(model, runtimeData, layerNumber, position);
         RunFeedForward(model, runtimeData, layerNumber);
         RunInjection(model, runtimeData, layerNumber);
     }
 
-    // <---------------------- Verified against llama.cpp ------------------>
     // Final logit calculation
     float *logits = NULL;
     if (!preFill)
@@ -378,10 +403,11 @@ static RuntimeData_t *AllocateRuntimeData(Model_t *model)
     assert(tmp->tmp2);
 
     assert(model->weights.per_layer_token_embd);
-    size_t totalInjectedSize = model->weights.per_layer_token_embd->dimensions[0];
+    const size_t totalInjectedSize = model->weights.per_layer_token_embd->dimensions[0];
+    const size_t perLayerSize = totalInjectedSize / model->blockCount;
     tmp->perLayerEmbeddings = malloc(totalInjectedSize * sizeof(float));
     tmp->allLayerModelProjections = malloc(totalInjectedSize * sizeof(float));
-    tmp->downProjected = malloc(256 * sizeof(float));
+    tmp->downProjected = malloc(perLayerSize * sizeof(float));
     assert(tmp->perLayerEmbeddings);
     assert(tmp->allLayerModelProjections);
     assert(tmp->downProjected);
@@ -520,11 +546,15 @@ static void RunAttention(Model_t *model, RuntimeData_t *runtimeData, uint32_t bl
     assert(layerWeights->attn_norm->type == GGML_TYPE_F32);
     assert(layerWeights->attn_norm->dimensions[0] == model->embeddingLength);
     MultiplyFloats(runtimeData->tmp1, runtimeData->tmp1, layerWeights->attn_norm->data.float32, model->embeddingLength);
+    DEBUG_VECTOR("attn_norm", runtimeData->tmp1, model->embeddingLength);
 
     /******************************************************************************
      * Compute Query, Key and Value Vectors for Current Token
      ******************************************************************************/
     // General preparations
+    assert(layerWeights->attn_q);
+    assert(layerWeights->attn_k);
+    assert(layerWeights->attn_v);
     assert(layerWeights->attn_q->dimensionCount == 2);
     assert(layerWeights->attn_k->dimensionCount == 2);
     assert(layerWeights->attn_v->dimensionCount == 2);
@@ -534,35 +564,60 @@ static void RunAttention(Model_t *model, RuntimeData_t *runtimeData, uint32_t bl
     const size_t vDimension = layerWeights->attn_v->dimensions[1];
     const size_t headDimension = layerWeights->attn_k_norm->dimensions[0];
     const size_t headCount = qDimension / headDimension;
-    // TODO: Remove hardcoded value
-    const bool globalAttention = headDimension == 512;
+    // TODO: Remove hardcoded values --> load these constants from model data.
+    const bool globalAttention = (headDimension == 512);
+    const size_t sharedKVLayerCount = 20;
+    const float ropeBase = globalAttention ? 1000000.0f : 10000.0f;
     assert(layerWeights->attn_q_norm->type == GGML_TYPE_F32);
     assert(layerWeights->attn_q_norm->dimensions[0] == headDimension);
 
-    // Apply projection matrices
-    MultiplyMatrixAndVector(runtimeData->q, qDimension, runtimeData->tmp1, model->embeddingLength, layerWeights->attn_q);
-    MultiplyMatrixAndVector(runtimeData->k, kDimension, runtimeData->tmp1, model->embeddingLength, layerWeights->attn_k);
-    MultiplyMatrixAndVector(runtimeData->v, vDimension, runtimeData->tmp1, model->embeddingLength, layerWeights->attn_v);
+    const size_t firstLayerWithSharedKV = model->blockCount - sharedKVLayerCount;
+    const size_t swaSharedKVLayer = firstLayerWithSharedKV - 2;
+    const size_t globalSharedKVLayer = firstLayerWithSharedKV - 1;
 
-    // Normalization
+    if (blockNumber < firstLayerWithSharedKV)
+    {
+        // Apply projection matrices
+        MultiplyMatrixAndVector(runtimeData->k, kDimension, runtimeData->tmp1, model->embeddingLength, layerWeights->attn_k);
+        MultiplyMatrixAndVector(runtimeData->v, vDimension, runtimeData->tmp1, model->embeddingLength, layerWeights->attn_v);
+        DEBUG_VECTOR("Kcur-0", runtimeData->k, kDimension);
+        DEBUG_VECTOR("Vcur-0", runtimeData->v, vDimension);
+
+        RMSNorm(runtimeData->k, runtimeData->k, kDimension);
+        RMSNorm(runtimeData->v, runtimeData->v, vDimension);
+        assert(layerWeights->attn_k_norm->type == GGML_TYPE_F32);
+        assert(layerWeights->attn_k_norm->dimensions[0] == kDimension);
+        MultiplyFloats(runtimeData->k, runtimeData->k, layerWeights->attn_k_norm->data.float32, kDimension);
+        DEBUG_VECTOR("", runtimeData->k, kDimension);
+
+        // RoPE
+        ApplyRoPE(runtimeData->k, kDimension, headDimension, position, ropeBase);
+        DEBUG_VECTOR("", runtimeData->q, qDimension);
+        DEBUG_VECTOR("", runtimeData->k, kDimension);
+    }
+    else
+    {
+        // Layers >= 15 reuse the KV cache values from layer 13/14
+        const size_t anchorLayer = globalAttention ? globalSharedKVLayer : swaSharedKVLayer;
+        float *kvCacheShared = runtimeData->kvCache + runtimeData->kvCacheOffsets[anchorLayer];
+
+        float *kvCacheSharedForToken = kvCacheShared + position * (kDimension + vDimension);
+        memcpy(runtimeData->k, kvCacheSharedForToken, kDimension * sizeof(float));
+        memcpy(runtimeData->v, kvCacheSharedForToken + kDimension, vDimension * sizeof(float));
+    }
+
+    MultiplyMatrixAndVector(runtimeData->q, qDimension, runtimeData->tmp1, model->embeddingLength, layerWeights->attn_q);
+    DEBUG_VECTOR("Qcur-0", runtimeData->q, qDimension);
     for (size_t head = 0; head < headCount; head++)
     {
         const size_t offset = head * headDimension;
         RMSNorm(runtimeData->q + offset, runtimeData->q + offset, headDimension);
         MultiplyFloats(runtimeData->q + offset, runtimeData->q + offset, layerWeights->attn_q_norm->data.float32, headDimension);
+        DEBUG_VECTOR("", (runtimeData->q + offset), headDimension);
     }
-
-    RMSNorm(runtimeData->k, runtimeData->k, kDimension);
-    RMSNorm(runtimeData->v, runtimeData->v, vDimension);
-    assert(layerWeights->attn_k_norm->type == GGML_TYPE_F32);
-    assert(layerWeights->attn_k_norm->dimensions[0] == kDimension);
-    MultiplyFloats(runtimeData->k, runtimeData->k, layerWeights->attn_k_norm->data.float32, kDimension);
-
-    // RoPE
-    // TODO: load these constants from model data.
-    const float ropeBase = globalAttention ? 1000000.0f : 10000.0f;
+    DEBUG_VECTOR("Qcur-0", runtimeData->q, qDimension);
     ApplyRoPE(runtimeData->q, qDimension, headDimension, position, ropeBase);
-    ApplyRoPE(runtimeData->k, kDimension, headDimension, position, ropeBase);
+    DEBUG_VECTOR("Qcur-0", runtimeData->q, qDimension);
 
     /******************************************************************************
      * Update KV Cache
@@ -582,17 +637,28 @@ static void RunAttention(Model_t *model, RuntimeData_t *runtimeData, uint32_t bl
     {
         // Measure similarity between the query and all cached keys
         const float *qHead = runtimeData->q + head * headDimension;
+        const size_t kvHeadCount = kDimension / headDimension;
+        const size_t kvHead = head / (headCount / kvHeadCount);
         for (size_t tokenPos = startPosition; tokenPos <= position; tokenPos++)
         {
-            const float *tokenKey = runtimeData->kvCache + runtimeData->kvCacheOffsets[blockNumber] + tokenPos * (kDimension + vDimension);
-            runtimeData->attentionScores[tokenPos] = DotProduct(qHead, tokenKey, headDimension) / sqrtf(headDimension);
+            const float *tokenKey = runtimeData->kvCache + runtimeData->kvCacheOffsets[blockNumber] + tokenPos * (kDimension + vDimension) + (kvHead * headDimension);
+            runtimeData->attentionScores[tokenPos] = DotProduct(qHead, tokenKey, headDimension); // / sqrtf(headDimension);
         }
 
-        // Apply softmax to the scores
+        // Apply softmax to the scores (note: initial implementation had numerical stability issues).
+        float maxScore = -INFINITY;
+        for (size_t tokenPos = startPosition; tokenPos <= position; tokenPos++)
+        {
+            if (runtimeData->attentionScores[tokenPos] > maxScore)
+            {
+                maxScore = runtimeData->attentionScores[tokenPos];
+            }
+        }
+
         float sum = 0.0f;
         for (size_t tokenPos = startPosition; tokenPos <= position; tokenPos++)
         {
-            runtimeData->attentionScores[tokenPos] = expf(runtimeData->attentionScores[tokenPos]);
+            runtimeData->attentionScores[tokenPos] = expf(runtimeData->attentionScores[tokenPos] - maxScore);
             sum += runtimeData->attentionScores[tokenPos];
         }
         for (size_t tokenPos = startPosition; tokenPos <= position; tokenPos++)
@@ -605,9 +671,14 @@ static void RunAttention(Model_t *model, RuntimeData_t *runtimeData, uint32_t bl
         memset(outputHead, 0, headDimension * sizeof(float));
         for (size_t tokenPos = startPosition; tokenPos <= position; tokenPos++)
         {
-            const float *valueInCache = runtimeData->kvCache + runtimeData->kvCacheOffsets[blockNumber] + tokenPos * (kDimension + vDimension) + kDimension;
+            const float *valueInCache = runtimeData->kvCache + runtimeData->kvCacheOffsets[blockNumber] + tokenPos * (kDimension + vDimension) + kDimension + (kvHead * headDimension);
             AddFloatsScaled(outputHead, outputHead, valueInCache, runtimeData->attentionScores[tokenPos], headDimension);
         }
+    }
+    for (size_t head = 0; head < headCount; head++)
+    {
+
+        DEBUG_VECTOR("", (runtimeData->vMixed + headDimension * head), vDimension);
     }
 
     /******************************************************************************
@@ -615,6 +686,8 @@ static void RunAttention(Model_t *model, RuntimeData_t *runtimeData, uint32_t bl
      ******************************************************************************/
     // Project back down to the hidden dimension
     MultiplyMatrixAndVector(runtimeData->tmp2, model->embeddingLength, runtimeData->vMixed, qDimension, layerWeights->attn_output);
+    DEBUG_VECTOR("", runtimeData->tmp2, model->embeddingLength);
+
     // Normalization
     RMSNorm(runtimeData->tmp2, runtimeData->tmp2, model->embeddingLength);
     assert(layerWeights->post_attention_norm->type == GGML_TYPE_F32);
@@ -622,6 +695,7 @@ static void RunAttention(Model_t *model, RuntimeData_t *runtimeData, uint32_t bl
     MultiplyFloats(runtimeData->tmp2, runtimeData->tmp2, layerWeights->post_attention_norm->data.float32, model->embeddingLength);
     // Add back original scaled token embedding
     AddFloats(runtimeData->tmp1, runtimeData->tmp2, runtimeData->x, model->embeddingLength);
+    DEBUG_VECTOR("", runtimeData->tmp1, model->embeddingLength);
 }
 
 static void RunFeedForward(Model_t *model, RuntimeData_t *runtimeData, uint32_t blockNumber)
@@ -635,6 +709,7 @@ static void RunFeedForward(Model_t *model, RuntimeData_t *runtimeData, uint32_t 
     assert(layerWeights->ffn_norm->type == GGML_TYPE_F32);
     assert(layerWeights->ffn_norm->dimensions[0] == model->embeddingLength);
     MultiplyFloats(runtimeData->tmp2, runtimeData->tmp2, layerWeights->ffn_norm->data.float32, model->embeddingLength);
+    DEBUG_VECTOR("", runtimeData->tmp2, model->embeddingLength);
 
     /******************************************************************************
      * Feed Forward Network
@@ -648,16 +723,20 @@ static void RunFeedForward(Model_t *model, RuntimeData_t *runtimeData, uint32_t 
     const size_t hiddenDimension = layerWeights->ffn_gate->dimensions[1];
     MultiplyMatrixAndVector(runtimeData->ffnHiddenGate, hiddenDimension, runtimeData->tmp2, model->embeddingLength, layerWeights->ffn_gate);
     MultiplyMatrixAndVector(runtimeData->ffnHiddenUp, hiddenDimension, runtimeData->tmp2, model->embeddingLength, layerWeights->ffn_up);
+    DEBUG_VECTOR("", runtimeData->ffnHiddenGate, hiddenDimension);
+    DEBUG_VECTOR("", runtimeData->ffnHiddenUp, hiddenDimension);
 
     // Apply GEGLU activation function
     for (size_t i = 0; i < hiddenDimension; i++)
     {
         const float x = runtimeData->ffnHiddenGate[i];
-        runtimeData->ffnHiddenGate[i] = (0.5f * x * (1.0f + tanhf(0.7978845608f * (x + 0.044715f * x * x * x)))) * runtimeData->ffnHiddenUp[i];
+        runtimeData->ffnHiddenGate[i] = (x * 0.5f * (1.0f + erff(x / 1.41421356f))) * runtimeData->ffnHiddenUp[i];
     }
+    DEBUG_VECTOR("", runtimeData->ffnHiddenGate, hiddenDimension);
 
     // Down projection
     MultiplyMatrixAndVector(runtimeData->tmp2, model->embeddingLength, runtimeData->ffnHiddenGate, hiddenDimension, layerWeights->ffn_down);
+    DEBUG_VECTOR("", runtimeData->tmp2, model->embeddingLength);
 
     /******************************************************************************
      * Finalize FFN Ouput
@@ -669,6 +748,7 @@ static void RunFeedForward(Model_t *model, RuntimeData_t *runtimeData, uint32_t 
     MultiplyFloats(runtimeData->tmp2, runtimeData->tmp2, layerWeights->post_ffw_norm->data.float32, model->embeddingLength);
     // Add back in the original input (= attention output)
     AddFloats(runtimeData->tmp2, runtimeData->tmp2, runtimeData->tmp1, model->embeddingLength);
+    DEBUG_VECTOR("", runtimeData->tmp2, model->embeddingLength);
 }
 
 static void RunInjection(Model_t *model, RuntimeData_t *runtimeData, uint32_t blockNumber)
@@ -684,6 +764,7 @@ static void RunInjection(Model_t *model, RuntimeData_t *runtimeData, uint32_t bl
     assert(layerWeights->inp_gate->dimensionCount == 2);
     const size_t perLayerInjectedSize = layerWeights->inp_gate->dimensions[1];
     MultiplyMatrixAndVector(runtimeData->downProjected, perLayerInjectedSize, runtimeData->tmp2, model->embeddingLength, layerWeights->inp_gate);
+    DEBUG_VECTOR("", runtimeData->downProjected, perLayerInjectedSize);
 
     // GELU activation function
     for (size_t i = 0; i < perLayerInjectedSize; i++)
@@ -691,37 +772,43 @@ static void RunInjection(Model_t *model, RuntimeData_t *runtimeData, uint32_t bl
         const float x = runtimeData->downProjected[i];
         runtimeData->downProjected[i] = (x * 0.5f * (1.0f + erff(x / 1.41421356f)));
     }
+    DEBUG_VECTOR("", runtimeData->downProjected, perLayerInjectedSize);
 
     /******************************************************************************
      * Inject Embedding
      ******************************************************************************/
     const size_t offset = blockNumber * perLayerInjectedSize;
-    RMSNorm(runtimeData->allLayerModelProjections + offset, runtimeData->allLayerModelProjections + offset, perLayerInjectedSize);
+    float *currentContext = runtimeData->tmp1; // Reusing the first 256 indices of tmp1
+    RMSNorm(currentContext, runtimeData->allLayerModelProjections + offset, perLayerInjectedSize);
     assert(model->weights.per_layer_proj_norm);
     assert(model->weights.per_layer_proj_norm->dimensionCount == 1);
     assert(model->weights.per_layer_proj_norm->dimensions[0] == perLayerInjectedSize);
     assert(model->weights.per_layer_proj_norm->type == GGML_TYPE_F32);
-    MultiplyFloats(runtimeData->allLayerModelProjections + offset, runtimeData->allLayerModelProjections, model->weights.per_layer_proj_norm->data.float32, perLayerInjectedSize);
+    MultiplyFloats(currentContext, currentContext, model->weights.per_layer_proj_norm->data.float32, perLayerInjectedSize);
 
-    AddFloats(runtimeData->allLayerModelProjections + offset, runtimeData->allLayerModelProjections + offset, runtimeData->perLayerEmbeddings + offset, perLayerInjectedSize);
-    MultiplyFloats(runtimeData->downProjected, runtimeData->downProjected, runtimeData->allLayerModelProjections + offset, perLayerInjectedSize);
+    AddFloats(currentContext, currentContext, runtimeData->perLayerEmbeddings + offset, perLayerInjectedSize);
+    MultiplyFloats(runtimeData->downProjected, runtimeData->downProjected, currentContext, perLayerInjectedSize);
+    DEBUG_VECTOR("", runtimeData->downProjected, perLayerInjectedSize);
 
     /******************************************************************************
      * Project back up
      ******************************************************************************/
     assert(layerWeights->proj);
     MultiplyMatrixAndVector(runtimeData->tmp1, model->embeddingLength, runtimeData->downProjected, perLayerInjectedSize, layerWeights->proj);
+    DEBUG_VECTOR("", runtimeData->tmp1, model->embeddingLength);
 
     RMSNorm(runtimeData->tmp1, runtimeData->tmp1, model->embeddingLength);
     assert(layerWeights->post_norm->type == GGML_TYPE_F32);
     assert(layerWeights->post_norm->dimensions[0] == model->embeddingLength);
     MultiplyFloats(runtimeData->tmp1, runtimeData->tmp1, layerWeights->post_norm->data.float32, model->embeddingLength);
+    DEBUG_VECTOR("", runtimeData->tmp1, model->embeddingLength);
 
     AddFloats(runtimeData->tmp1, runtimeData->tmp2, runtimeData->tmp1, model->embeddingLength);
     assert(layerWeights->layer_output_scale);
     assert(layerWeights->layer_output_scale->type == GGML_TYPE_F32);
     assert(layerWeights->layer_output_scale->dimensions[0] == 1);
     ScaleFloats(runtimeData->x, runtimeData->tmp1, layerWeights->layer_output_scale->data.float32[0], model->embeddingLength);
+    DEBUG_VECTOR("", runtimeData->x, model->embeddingLength);
 }
 
 static float *RunClassifier(Model_t *model, RuntimeData_t *runtimeData)
@@ -732,10 +819,16 @@ static float *RunClassifier(Model_t *model, RuntimeData_t *runtimeData)
     assert(model->weights.output_norm->type == GGML_TYPE_F32);
     assert(model->weights.output_norm->dimensions[0] == model->embeddingLength);
     MultiplyFloats(runtimeData->x, runtimeData->x, model->weights.output_norm->data.float32, model->embeddingLength);
+    DEBUG_VECTOR("", runtimeData->x, model->embeddingLength);
 
-    MultiplyMatrixAndVector(runtimeData->logits, model->tokenCount, runtimeData->tmp2, model->embeddingLength, model->weights.token_embd);
+    MultiplyMatrixAndVector(runtimeData->logits, model->tokenCount, runtimeData->x, model->embeddingLength, model->weights.token_embd);
+
+    // TODO: load value from 'gemma4.final_logit_softcapping' = 30.000000
     for (size_t i = 0; i < model->tokenCount; i++)
+    {
         runtimeData->logits[i] = 30.0f * tanhf(runtimeData->logits[i] / 30.0f);
+    }
+    DEBUG_VECTOR("", runtimeData->logits, model->tokenCount);
     return runtimeData->logits;
 }
 
