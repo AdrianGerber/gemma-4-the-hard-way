@@ -9,9 +9,9 @@
             "problemMatcher": []
         },
         {
-            "label": "Build, Test and Run",
+            "label": "Build and Run",
             "type": "shell",
-            "command": "cmake --build build && ctest --test-dir build && ./build/hello_world",
+            "command": "cmake --build build && ./build/gemma_4_the_hard_way",
             "group": {
                 "kind": "build",
                 "isDefault": true

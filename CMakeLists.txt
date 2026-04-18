@@ -13,20 +13,22 @@ if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
         -Wsign-conversion
         -Werror
         -Wformat=2
+        -O2 -g
         -Wundef
         -Wstrict-prototypes
         -Wmissing-prototypes
-#        -fanalyzer --> fanalyzer really doesn't seem to like returning pointers to malloc'd data in a struct by value. My code may well have other memory leaks, but I don't think fanalyzer is correct here.    
+        # -fanalyzer --> fanalyzer really doesn't seem to like returning pointers to malloc'd data in a struct by value. My code may well have other memory leaks, but I don't think fanalyzer is correct there.
+        # -fsanitize=address --> I disabled this because of the performance impact, but at the moment it doesn't find any leaks or out-of-bounds accesses when enabled.
     )
+    # add_link_options(
+    #     -fsanitize=address
+    # )
 endif()
 
 # Add source directory
 add_subdirectory(src)
 
 # Main executable
-add_executable(hello_world src/main.c)
-target_link_libraries(hello_world PRIVATE gemma_lib)
+add_executable(gemma_4_the_hard_way src/main.c)
+target_link_libraries(gemma_4_the_hard_way PRIVATE gemma_lib m)
 
-# Testing configuration
-enable_testing()
-add_subdirectory(tests)
