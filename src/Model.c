@@ -268,6 +268,7 @@ void Model_GenerateCompletionsToStdOut(Model_t *model, const char *prompt)
     printf("\n");
 
     ReleaseRuntimeData(runtimeData);
+    Tokenizer_ReleaseEncoded(tokenIds);
 }
 
 void Model_Release(Model_t *model)
@@ -429,9 +430,6 @@ static RuntimeData_t *AllocateRuntimeData(Model_t *model)
     assert(tmp->ffnHiddenGate);
     assert(tmp->ffnHiddenUp);
 
-    tmp->attentionScores = malloc(model->contextSize * sizeof(float));
-    assert(tmp->attentionScores);
-
     // Allocate buffers for the QKV attention calculations
     size_t maxQ = 0;
     size_t maxK = 0;
@@ -497,6 +495,7 @@ void ReleaseRuntimeData(RuntimeData_t *data)
         free(data->kvCacheOffsets);
         free(data->attentionScores);
         free(data->vMixed);
+        free(data->tokenProbabilities);
         free(data);
     }
 }
@@ -623,6 +622,8 @@ static void RunAttention(Model_t *model, RuntimeData_t *runtimeData, uint32_t bl
      * Update KV Cache
      ******************************************************************************/
     // TODO: I think it might be better to have seperate buffers for the K and V values.
+    //       We might also be able to reduce the allocated KV cache size since attention
+    //       layers from 15 onwards reuse the earlier cache.
     float *kvCacheForLayer = runtimeData->kvCache + runtimeData->kvCacheOffsets[blockNumber];
     float *kvCacheForToken = kvCacheForLayer + position * (kDimension + vDimension);
     memcpy(kvCacheForToken, runtimeData->k, kDimension * sizeof(float));
@@ -642,7 +643,7 @@ static void RunAttention(Model_t *model, RuntimeData_t *runtimeData, uint32_t bl
         for (size_t tokenPos = startPosition; tokenPos <= position; tokenPos++)
         {
             const float *tokenKey = runtimeData->kvCache + runtimeData->kvCacheOffsets[blockNumber] + tokenPos * (kDimension + vDimension) + (kvHead * headDimension);
-            runtimeData->attentionScores[tokenPos] = DotProduct(qHead, tokenKey, headDimension); // / sqrtf(headDimension);
+            runtimeData->attentionScores[tokenPos] = DotProduct(qHead, tokenKey, headDimension); // / sqrtf(headDimension); <-- This is a mistake that cost me like 4 hours to find :)
         }
 
         // Apply softmax to the scores (note: initial implementation had numerical stability issues).
