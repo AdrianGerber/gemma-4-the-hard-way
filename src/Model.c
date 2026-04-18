@@ -34,29 +34,11 @@
 #include <string.h>
 #include <math.h>
 #include <time.h>
+#include "Debug.h"
 
 /******************************************************************************
  * Private Constants and Macros
  ******************************************************************************/
-
-#define DEBUG_TENSOR_VALUES 0
-#define DEBUG_TOKEN_PROBABILITIES 1
-
-#if DEBUG_TENSOR_VALUES
-#define STRINGIFY(x) #x
-#define TOSTRING(x) STRINGIFY(x)
-
-// Ugly but very, very useful debug macro :)
-#define DEBUG_TENSOR(vector, length)                                                                                                                                                            \
-    {                                                                                                                                                                                           \
-        float tmpSum123 = 0.0f;                                                                                                                                                                 \
-        for (size_t i = 0; i < length; i++)                                                                                                                                                     \
-            tmpSum123 += vector[i];                                                                                                                                                             \
-        printf("%04u %-20s %-30s sum=%06f            value=[%f, %f, ..., %f, %f]\n", __LINE__, tag, TOSTRING(vector), tmpSum123, vector[0], vector[1], vector[length - 2], vector[length - 1]); \
-    }
-#else
-#define DEBUG_TENSOR(vector, length)
-#endif
 
 /******************************************************************************
  * Private Type Definitions
@@ -104,6 +86,7 @@ Model_t *Model_LoadFromGGUF(const uint8_t *data, size_t length)
     {
         model->metadata[i] = GGUF_MetadataFromMemory(&readPointer);
 
+#if DEBUG_PRINT_METADATA
         if (model->metadata[i].type == GGUF_METADATA_VALUE_TYPE_ARRAY && model->metadata[i].value.array.length > 10)
         {
             printf("'%s' = [...]\n", model->metadata[i].key);
@@ -116,6 +99,7 @@ Model_t *Model_LoadFromGGUF(const uint8_t *data, size_t length)
         {
             GGUF_MetadataPrint(model->metadata[i]);
         }
+#endif
     }
 
     // Parse tensor infos
@@ -125,7 +109,9 @@ Model_t *Model_LoadFromGGUF(const uint8_t *data, size_t length)
     for (size_t i = 0; i < model->tensorInfoCount; i++)
     {
         model->tensorInfo[i] = GGUF_TensorInfoFromMemory(&readPointer);
-        // GGUF_TensorInfoPrint(model->tensorInfo[i]);
+#if DEBUG_PRINT_TENSORINFO
+        GGUF_TensorInfoPrint(model->tensorInfo[i]);
+#endif
     }
 
     // Handle padding between tensor_info and tensor_data sections
@@ -157,7 +143,9 @@ Model_t *Model_LoadFromGGUF(const uint8_t *data, size_t length)
     assert(blockCount->type == GGUF_METADATA_VALUE_TYPE_UINT32);
     model->blockCount = blockCount->value.uint32;
     model->weights.blocks = malloc(model->blockCount * sizeof(BlockWeights_t));
+#if DEBUG_PRINT_TENSORINFO
     printf("Loading %lu blocks...\n", model->blockCount);
+#endif
     for (size_t i = 0; i < model->blockCount; i++)
     {
         model->weights.blocks[i].attn_k = GetTensorForBlock(model, i, "attn_k.weight");
@@ -258,7 +246,9 @@ Model_t *Model_LoadFromGGUF(const uint8_t *data, size_t length)
 
 void Model_GenerateCompletionsToStdOut(Model_t *model, const char *prompt)
 {
+#if DEBUG_PRINT_TOKENIZER
     printf("Encoding Text '%s'\n", prompt);
+#endif
     TokenizerEncoded_t tokenIds = Tokenizer_Encode(model->tokenizer, prompt);
     printf("Tokenized: ");
     Tokenizer_DecodeToStdOut(model->tokenizer, tokenIds, true);
@@ -280,7 +270,9 @@ void Model_GenerateCompletionsToStdOut(Model_t *model, const char *prompt)
     float *logits = ForwardProcess(model, runtimeData, tokenIds.tokens[position], position, false);
     assert(logits);
     uint32_t token = SelectTokenFromLogits(model, runtimeData, logits);
+#if !DEBUG_TOKEN_PROBABILITIES
     Tokenizer_DecodeToStdOut(model->tokenizer, (TokenizerEncoded_t){.length = 1, .tokens = &token}, false);
+#endif
     position++;
     fflush(stdout);
 
@@ -290,7 +282,9 @@ void Model_GenerateCompletionsToStdOut(Model_t *model, const char *prompt)
         logits = ForwardProcess(model, runtimeData, token, position, false);
         assert(logits);
         token = SelectTokenFromLogits(model, runtimeData, logits);
+#if !DEBUG_TOKEN_PROBABILITIES
         Tokenizer_DecodeToStdOut(model->tokenizer, (TokenizerEncoded_t){.length = 1, .tokens = &token}, false);
+#endif
         position++;
 
         fflush(stdout);

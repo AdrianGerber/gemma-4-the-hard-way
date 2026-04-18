@@ -106,6 +106,7 @@ int main(int argc, char *argv[])
 
         // Run inference.
         Model_GenerateCompletionsToStdOut(model, prompt);
+        printf("\n");
 
         // Cleanup
         free(prompt);

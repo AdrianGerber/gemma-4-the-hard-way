@@ -37,6 +37,7 @@
 #include <stdio.h>
 #include <assert.h>
 #include <time.h>
+#include "Debug.h"
 
 /******************************************************************************
  * Private Constants and Macros
@@ -66,25 +67,21 @@ Tokenizer_t Tokenizer_Init(GGUF_Metadata_t *metadata, size_t count)
     Tokenizer_t tokenizer;
 
     // Get all the required values from the model metadata and verify the basic assumptions made by the tokenizer.
-
     const GGUF_Metadata_t *model = GGUF_MetadataFindByKey(metadata, count, "tokenizer.ggml.model");
     assert(model);
     assert(model->type == GGUF_METADATA_VALUE_TYPE_STRING);
-    printf("Setting up tokenizer for %s:\n", model->value.str);
 
     const GGUF_Metadata_t *tokens = GGUF_MetadataFindByKey(metadata, count, "tokenizer.ggml.tokens");
     assert(tokens);
     assert(tokens->type == GGUF_METADATA_VALUE_TYPE_ARRAY);
     assert(tokens->value.array.type == GGUF_METADATA_VALUE_TYPE_STRING);
     tokenizer.tokens = tokens->value.array;
-    printf("- Found %lu tokens.\n", tokenizer.tokens.length);
 
     const GGUF_Metadata_t *scores = GGUF_MetadataFindByKey(metadata, count, "tokenizer.ggml.scores");
     assert(scores);
     assert(scores->type == GGUF_METADATA_VALUE_TYPE_ARRAY);
     assert(scores->value.array.type == GGUF_METADATA_VALUE_TYPE_FLOAT32);
     tokenizer.scores = scores->value.array;
-    printf("- Found %lu scores.\n", tokenizer.scores.length);
     assert(tokenizer.scores.length == tokenizer.tokens.length);
 
     const GGUF_Metadata_t *tokenTypes = GGUF_MetadataFindByKey(metadata, count, "tokenizer.ggml.token_type");
@@ -92,7 +89,6 @@ Tokenizer_t Tokenizer_Init(GGUF_Metadata_t *metadata, size_t count)
     assert(tokenTypes->type == GGUF_METADATA_VALUE_TYPE_ARRAY);
     assert(tokenTypes->value.array.type == GGUF_METADATA_VALUE_TYPE_INT32);
     tokenizer.tokenTypes = tokenTypes->value.array;
-    printf("- Found %lu token types.\n", tokenizer.tokenTypes.length);
     assert(tokenizer.tokenTypes.length == tokenizer.tokens.length);
 
     const GGUF_Metadata_t *merges = GGUF_MetadataFindByKey(metadata, count, "tokenizer.ggml.merges");
@@ -100,7 +96,6 @@ Tokenizer_t Tokenizer_Init(GGUF_Metadata_t *metadata, size_t count)
     assert(merges->type == GGUF_METADATA_VALUE_TYPE_ARRAY);
     assert(merges->value.array.type == GGUF_METADATA_VALUE_TYPE_STRING);
     tokenizer.merges = merges->value.array;
-    printf("- Found %lu merge rules.\n", tokenizer.merges.length);
 
     const GGUF_Metadata_t *tokenIdBos = GGUF_MetadataFindByKey(metadata, count, "tokenizer.ggml.bos_token_id");
     const GGUF_Metadata_t *tokenIdEos = GGUF_MetadataFindByKey(metadata, count, "tokenizer.ggml.eos_token_id");
@@ -127,6 +122,12 @@ Tokenizer_t Tokenizer_Init(GGUF_Metadata_t *metadata, size_t count)
     tokenizer.tokenEndOfTurn = StringToToken(tokenizer, endOfTurn, sizeof(endOfTurn) - 1);
     assert(tokenizer.tokenEndOfTurn != tokenizer.tokenIdUnknown);
 
+#if DEBUG_PRINT_TOKENIZER
+    printf("Setting up tokenizer for %s:\n", model->value.str);
+    printf("- Found %lu tokens.\n", tokenizer.tokens.length);
+    printf("- Found %lu scores.\n", tokenizer.scores.length);
+    printf("- Found %lu token types.\n", tokenizer.tokenTypes.length);
+    printf("- Found %lu merge rules.\n", tokenizer.merges.length);
     printf("- Loaded special tokens (bos=%u, eos=%u, unknown=%u, padding=%u, mask=%u, tokenEndOfTurn=%u)\n",
            tokenizer.tokenIdBos,
            tokenizer.tokenIdEos,
@@ -145,14 +146,17 @@ Tokenizer_t Tokenizer_Init(GGUF_Metadata_t *metadata, size_t count)
     assert(addBosToken->value.bool_ == false);
 
     printf("\n");
+#endif
     return tokenizer;
 }
 
 TokenizerEncoded_t Tokenizer_Encode(Tokenizer_t tokenizer, const char *input)
 {
+#if DEBUG_PRINT_TOKENIZER
     // Performance measurement
     struct timespec start;
     clock_gettime(CLOCK_MONOTONIC, &start);
+#endif
 
     TokenizerEncoded_t output = {
         .length = 0,
@@ -335,11 +339,13 @@ TokenizerEncoded_t Tokenizer_Encode(Tokenizer_t tokenizer, const char *input)
     free(tmp);
     free(processedInput);
 
+#if DEBUG_PRINT_TOKENIZER
     // Statistics to see just how slow the code runs :).
     struct timespec end;
     clock_gettime(CLOCK_MONOTONIC, &end);
     double elapsed = (end.tv_sec + end.tv_nsec / 1000000000.0) - (start.tv_sec + start.tv_nsec / 1000000000.0);
     printf("Tokenizer took %lfs for %lu iterations.\n", elapsed, initialCount - finalTokenCount);
+#endif
     return output;
 }
 
