@@ -94,7 +94,6 @@ typedef struct
     GGUF_TensorInfo_t *tensorInfo;
     size_t metadataCount, tensorInfoCount, blockCount, tokenCount, contextSize, embeddingLength, alignment;
     Tokenizer_t tokenizer;
-
     struct
     {
         BlockWeights_t *blocks;
@@ -104,6 +103,7 @@ typedef struct
         const GGUF_TensorInfo_t *per_layer_token_embd;
         const GGUF_TensorInfo_t *rope_freqs;
         const GGUF_TensorInfo_t *token_embd;
+        float rmsNormEpsilon;
     } weights;
 } Model_t;
 
