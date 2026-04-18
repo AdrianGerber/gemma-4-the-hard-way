@@ -66,6 +66,12 @@ typedef struct
 
 typedef struct
 {
+    uint32_t tokenId;
+    float probability;
+} TokenProbability_t;
+
+typedef struct
+{
     float *logits;
     float *x;
     float *residuals;
@@ -82,6 +88,7 @@ typedef struct
     size_t *kvCacheOffsets;
     float *attentionScores;
     float *vMixed;
+    TokenProbability_t *tokenProbabilities;
 } RuntimeData_t;
 
 /**
@@ -104,6 +111,9 @@ typedef struct
         const GGUF_TensorInfo_t *rope_freqs;
         const GGUF_TensorInfo_t *token_embd;
         float rmsNormEpsilon;
+        float topP;
+        float temperature;
+        size_t topK;
         float ropeFreqBase;
         float ropeFreqBaseSWA;
         size_t sharedAttentionLayerCount;

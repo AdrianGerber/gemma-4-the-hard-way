@@ -71,7 +71,7 @@
  ******************************************************************************/
 static const GGUF_TensorInfo_t *GetTensorForBlock(Model_t *model, size_t blockIndex, const char *tensorName);
 static float *ForwardProcess(Model_t *model, RuntimeData_t *runtimeData, uint32_t token, uint32_t position, bool preFill);
-static uint32_t SelectTokenFromLogits(Model_t *model, float *logits);
+static uint32_t SelectTokenFromLogits(Model_t *model, RuntimeData_t *runtimeData, float *logits);
 static RuntimeData_t *AllocateRuntimeData(Model_t *model);
 static void ReleaseRuntimeData(RuntimeData_t *data);
 static void RunAttention(Model_t *model, RuntimeData_t *runtimeData, uint32_t blockNumber, uint32_t position);
@@ -203,8 +203,8 @@ Model_t *Model_LoadFromGGUF(const uint8_t *data, size_t length)
         printf("Limiting context size to 2048 for now.\n");
         model->contextSize = 2048;
     }
-    model->weights.rmsNormEpsilon = 0.000001f;
     const GGUF_Metadata_t *rmsEpsilon = GGUF_MetadataFindByKey(model->metadata, model->metadataCount, "gemma4.attention.layer_norm_rms_epsilon");
+    model->weights.rmsNormEpsilon = 0.000001f;
     if (rmsEpsilon)
     {
         assert(rmsEpsilon->type == GGUF_METADATA_VALUE_TYPE_FLOAT32);
@@ -215,6 +215,19 @@ Model_t *Model_LoadFromGGUF(const uint8_t *data, size_t length)
     assert(embeddingLength);
     assert(embeddingLength->type == GGUF_METADATA_VALUE_TYPE_UINT32);
     model->embeddingLength = embeddingLength->value.uint32;
+
+    const GGUF_Metadata_t *topP = GGUF_MetadataFindByKey(model->metadata, model->metadataCount, "general.sampling.top_p");
+    const GGUF_Metadata_t *topK = GGUF_MetadataFindByKey(model->metadata, model->metadataCount, "general.sampling.top_k");
+    const GGUF_Metadata_t *temperature = GGUF_MetadataFindByKey(model->metadata, model->metadataCount, "general.sampling.temp");
+    assert(topP);
+    assert(topK);
+    assert(temperature);
+    assert(topK->type == GGUF_METADATA_VALUE_TYPE_INT32);
+    model->weights.topK = topK->value.uint32;
+    assert(topP->type == GGUF_METADATA_VALUE_TYPE_FLOAT32);
+    model->weights.topP = topP->value.float32;
+    assert(temperature->type == GGUF_METADATA_VALUE_TYPE_FLOAT32);
+    model->weights.temperature = temperature->value.float32;
 
     const GGUF_Metadata_t *ropeFreqBase = GGUF_MetadataFindByKey(model->metadata, model->metadataCount, "gemma4.rope.freq_base");
     const GGUF_Metadata_t *ropeFreqBaseSWA = GGUF_MetadataFindByKey(model->metadata, model->metadataCount, "gemma4.rope.freq_base_swa");
@@ -266,7 +279,7 @@ void Model_GenerateCompletionsToStdOut(Model_t *model, const char *prompt)
     printf("Generating Predictions:\n\n");
     float *logits = ForwardProcess(model, runtimeData, tokenIds.tokens[position], position, false);
     assert(logits);
-    uint32_t token = SelectTokenFromLogits(model, logits);
+    uint32_t token = SelectTokenFromLogits(model, runtimeData, logits);
     Tokenizer_DecodeToStdOut(model->tokenizer, (TokenizerEncoded_t){.length = 1, .tokens = &token}, false);
     position++;
     fflush(stdout);
@@ -276,7 +289,7 @@ void Model_GenerateCompletionsToStdOut(Model_t *model, const char *prompt)
     {
         logits = ForwardProcess(model, runtimeData, token, position, false);
         assert(logits);
-        token = SelectTokenFromLogits(model, logits);
+        token = SelectTokenFromLogits(model, runtimeData, logits);
         Tokenizer_DecodeToStdOut(model->tokenizer, (TokenizerEncoded_t){.length = 1, .tokens = &token}, false);
         position++;
 
@@ -393,22 +406,104 @@ static float *ForwardProcess(Model_t *model, RuntimeData_t *runtimeData, uint32_
     return logits;
 }
 
-static uint32_t SelectTokenFromLogits(Model_t *model, float *logits)
+static int CompareTokenProbabilities(const void *a, const void *b)
 {
-    // TODO: Implement proper scaling and temperature handling.
+    const TokenProbability_t *tokenA = (const TokenProbability_t *)a;
+    const TokenProbability_t *tokenB = (const TokenProbability_t *)b;
 
-    // For now, just pick the token with the highest logit.
-    float highestLogitValue = -INFINITY;
-    uint32_t highestLogitToken = 0;
+    if (tokenA->probability < tokenB->probability)
+    {
+        return 1;
+    }
+    if (tokenA->probability > tokenB->probability)
+    {
+        return -1;
+    }
+    return 0;
+}
+
+static uint32_t SelectTokenFromLogits(Model_t *model, RuntimeData_t *runtimeData, float *logits)
+{
+    // Apply temperature scaling and find max value for softmax
+    float maxLogitValue = -INFINITY;
     for (size_t i = 0; i < model->tokenCount; i++)
     {
-        if (logits[i] > highestLogitValue)
+        const float scaled = logits[i] / model->weights.temperature;
+
+        runtimeData->tokenProbabilities[i].tokenId = i;
+        runtimeData->tokenProbabilities[i].probability = scaled;
+        if (scaled > maxLogitValue)
         {
-            highestLogitValue = logits[i];
-            highestLogitToken = i;
+            maxLogitValue = scaled;
         }
     }
-    return highestLogitToken;
+
+    // Softmax
+    float probabilitySum = 0.0f;
+    for (size_t i = 0; i < model->tokenCount; i++)
+    {
+        const float p = expf(runtimeData->tokenProbabilities[i].probability - maxLogitValue);
+        runtimeData->tokenProbabilities[i].probability = p;
+        probabilitySum += p;
+    }
+    for (size_t i = 0; i < model->tokenCount; i++)
+    {
+        // Note: I think we could leave this out because the top K items get re-normalized anyways.
+        runtimeData->tokenProbabilities[i].probability /= probabilitySum;
+    }
+
+    // Sort by probability
+    qsort(runtimeData->tokenProbabilities, model->tokenCount, sizeof(TokenProbability_t), CompareTokenProbabilities);
+
+    // Determine cutoff (whichever limit of top_k or top_p hits first)
+    size_t tokensBeforeCutoff = 0;
+    probabilitySum = 0.0f;
+    for (size_t i = 0; i < model->weights.topK; i++)
+    {
+        probabilitySum += runtimeData->tokenProbabilities[i].probability;
+        tokensBeforeCutoff++;
+        if (probabilitySum >= model->weights.topP)
+        {
+            break;
+        }
+    }
+
+    // Normalize the top tokens so their probabilities sum to 1.0f
+    for (size_t i = 0; i < tokensBeforeCutoff; i++)
+    {
+        runtimeData->tokenProbabilities[i].probability /= probabilitySum;
+    }
+
+    // Select a random element according to the relative probabilities
+    float random = (float)rand() / RAND_MAX;
+    size_t selectedIndex = tokensBeforeCutoff - 1;
+    float accumulator = 0.0f;
+    for (size_t i = 0; i < tokensBeforeCutoff; i++)
+    {
+        accumulator += runtimeData->tokenProbabilities[i].probability;
+        if (accumulator >= random)
+        {
+            selectedIndex = i;
+            break;
+        }
+    }
+
+#if DEBUG_TOKEN_PROBABILITIES
+    printf("\nConsidered tokens:\n");
+    for (size_t i = 0; i < tokensBeforeCutoff; i++)
+    {
+        printf("- %.1f%% ", 100.0f * runtimeData->tokenProbabilities[i].probability);
+        Tokenizer_DecodeToStdOut(model->tokenizer, (TokenizerEncoded_t){.length = 1, .tokens = &runtimeData->tokenProbabilities[i].tokenId}, true);
+        if (i == selectedIndex)
+        {
+            printf(" <-- selected!");
+        }
+        printf("\n");
+    }
+    printf("\n");
+#endif
+
+    return runtimeData->tokenProbabilities[selectedIndex].tokenId;
 }
 
 static RuntimeData_t *AllocateRuntimeData(Model_t *model)
@@ -416,7 +511,9 @@ static RuntimeData_t *AllocateRuntimeData(Model_t *model)
     RuntimeData_t *tmp = malloc(sizeof(RuntimeData_t));
     assert(tmp);
     tmp->logits = malloc(model->tokenCount * sizeof(float));
+    tmp->tokenProbabilities = malloc(model->tokenCount * sizeof(TokenProbability_t));
     assert(tmp->logits);
+    assert(tmp->tokenProbabilities);
     tmp->x = malloc(model->embeddingLength * sizeof(float));
     tmp->residuals = malloc(model->embeddingLength * sizeof(float));
     tmp->tmp1 = malloc(model->embeddingLength * sizeof(float));
