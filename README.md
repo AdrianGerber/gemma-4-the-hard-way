@@ -1,8 +1,6 @@
 # gemma-4-the-hard-way
 
-## Objectives
-
-A C program that can run inference using one of Google's new [Gemma 4](https://blog.google/innovation-and-ai/technology/developers-tools/gemma-4/) models. Dependencies other than the standard library and operating system headers must be avoided. The primary objective is learning more about LLM architecture and what it takes to run such models.
+A C program that can run inference using Google's [gemma-4-e2b-it-Q8_0](https://blog.google/innovation-and-ai/technology/developers-tools/gemma-4/) model. Dependencies other than the standard library and operating system headers must be avoided. The primary objective is learning more about LLM architecture and what it takes to run such models.
 
 ## Usage
 
