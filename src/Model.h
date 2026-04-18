@@ -104,6 +104,13 @@ typedef struct
         const GGUF_TensorInfo_t *rope_freqs;
         const GGUF_TensorInfo_t *token_embd;
         float rmsNormEpsilon;
+        float ropeFreqBase;
+        float ropeFreqBaseSWA;
+        size_t sharedAttentionLayerCount;
+        float finalLogitSoftcapping;
+        size_t attentionSlidingWindowSize;
+        size_t attentionKeyLength;
+        size_t attentionSlidingWindowKeyLength;
     } weights;
 } Model_t;
 

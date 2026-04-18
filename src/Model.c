@@ -215,6 +215,31 @@ Model_t *Model_LoadFromGGUF(const uint8_t *data, size_t length)
     assert(embeddingLength);
     assert(embeddingLength->type == GGUF_METADATA_VALUE_TYPE_UINT32);
     model->embeddingLength = embeddingLength->value.uint32;
+
+    const GGUF_Metadata_t *ropeFreqBase = GGUF_MetadataFindByKey(model->metadata, model->metadataCount, "gemma4.rope.freq_base");
+    const GGUF_Metadata_t *ropeFreqBaseSWA = GGUF_MetadataFindByKey(model->metadata, model->metadataCount, "gemma4.rope.freq_base_swa");
+    assert(ropeFreqBase);
+    assert(ropeFreqBaseSWA);
+    assert(ropeFreqBase->type == GGUF_METADATA_VALUE_TYPE_FLOAT32 && ropeFreqBaseSWA->type == GGUF_METADATA_VALUE_TYPE_FLOAT32);
+    model->weights.ropeFreqBaseSWA = ropeFreqBaseSWA->value.float32;
+    model->weights.ropeFreqBase = ropeFreqBase->value.float32;
+
+    const GGUF_Metadata_t *sharedAttentionLayerCount = GGUF_MetadataFindByKey(model->metadata, model->metadataCount, "gemma4.attention.shared_kv_layers");
+    const GGUF_Metadata_t *finalLogitSoftcapping = GGUF_MetadataFindByKey(model->metadata, model->metadataCount, "gemma4.final_logit_softcapping");
+    const GGUF_Metadata_t *attentionSlidingWindowSize = GGUF_MetadataFindByKey(model->metadata, model->metadataCount, "gemma4.attention.sliding_window");
+    const GGUF_Metadata_t *attentionKeyLength = GGUF_MetadataFindByKey(model->metadata, model->metadataCount, "gemma4.attention.key_length");
+    const GGUF_Metadata_t *attentionSlidingWindowKeyLength = GGUF_MetadataFindByKey(model->metadata, model->metadataCount, "gemma4.attention.key_length_swa");
+    assert(sharedAttentionLayerCount && finalLogitSoftcapping && attentionSlidingWindowSize && attentionKeyLength && attentionSlidingWindowKeyLength);
+    assert(sharedAttentionLayerCount->type == GGUF_METADATA_VALUE_TYPE_UINT32);
+    assert(attentionSlidingWindowSize->type == GGUF_METADATA_VALUE_TYPE_UINT32);
+    assert(attentionKeyLength->type == GGUF_METADATA_VALUE_TYPE_UINT32);
+    assert(attentionSlidingWindowKeyLength->type == GGUF_METADATA_VALUE_TYPE_UINT32);
+    assert(finalLogitSoftcapping->type == GGUF_METADATA_VALUE_TYPE_FLOAT32);
+    model->weights.sharedAttentionLayerCount = (size_t)sharedAttentionLayerCount->value.uint32;
+    model->weights.finalLogitSoftcapping = finalLogitSoftcapping->value.float32;
+    model->weights.attentionSlidingWindowSize = (size_t)attentionSlidingWindowSize->value.uint32;
+    model->weights.attentionKeyLength = (size_t)attentionKeyLength->value.uint32;
+    model->weights.attentionSlidingWindowKeyLength = (size_t)attentionSlidingWindowKeyLength->value.uint32;
     return model;
 }
 
@@ -527,14 +552,11 @@ static void RunAttention(Model_t *model, RuntimeData_t *runtimeData, uint32_t bl
     const size_t vDimension = layerWeights->attn_v->dimensions[1];
     const size_t headDimension = layerWeights->attn_k_norm->dimensions[0];
     const size_t headCount = qDimension / headDimension;
-    // TODO: Remove hardcoded values --> load these constants from model data.
-    const bool globalAttention = (headDimension == 512);
-    const size_t sharedKVLayerCount = 20;
-    const float ropeBase = globalAttention ? 1000000.0f : 10000.0f;
+    const bool globalAttention = (headDimension == model->weights.attentionKeyLength);
+    const float ropeBase = globalAttention ? model->weights.ropeFreqBase : model->weights.ropeFreqBaseSWA;
     assert(layerWeights->attn_q_norm->type == GGML_TYPE_F32);
     assert(layerWeights->attn_q_norm->dimensions[0] == headDimension);
-
-    const size_t firstLayerWithSharedKV = model->blockCount - sharedKVLayerCount;
+    const size_t firstLayerWithSharedKV = model->blockCount - model->weights.sharedAttentionLayerCount;
     const size_t swaSharedKVLayer = firstLayerWithSharedKV - 2;
     const size_t globalSharedKVLayer = firstLayerWithSharedKV - 1;
 
@@ -596,7 +618,11 @@ static void RunAttention(Model_t *model, RuntimeData_t *runtimeData, uint32_t bl
     /******************************************************************************
      * Blend Cached Values
      ******************************************************************************/
-    const size_t startPosition = globalAttention ? 0 : (position > 512 ? position - 512 : 0);
+    size_t startPosition = 0;
+    if (!globalAttention && position > model->weights.attentionSlidingWindowSize)
+    {
+        startPosition = position - model->weights.attentionSlidingWindowSize;
+    }
 
     for (size_t head = 0; head < headCount; head++)
     {
@@ -788,12 +814,10 @@ static float *RunClassifier(Model_t *model, RuntimeData_t *runtimeData)
 
     MultiplyMatrixAndVector(runtimeData->logits, model->tokenCount, runtimeData->x, model->embeddingLength, model->weights.token_embd);
 
-    // TODO: load value from 'gemma4.final_logit_softcapping' = 30.000000
     for (size_t i = 0; i < model->tokenCount; i++)
     {
-        runtimeData->logits[i] = 30.0f * tanhf(runtimeData->logits[i] / 30.0f);
+        runtimeData->logits[i] = model->weights.finalLogitSoftcapping * tanhf(runtimeData->logits[i] / model->weights.finalLogitSoftcapping);
     }
     DEBUG_TENSOR(runtimeData->logits, model->tokenCount);
     return runtimeData->logits;
 }
-
