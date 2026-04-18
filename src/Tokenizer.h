@@ -57,7 +57,7 @@ typedef struct
     GGUF_MetadataValueArray_t scores;     // Not used for now (alternative way of tokenizing)
     GGUF_MetadataValueArray_t tokenTypes; // Identification of special token types (e.g. control sequences)
     GGUF_MetadataValueArray_t merges;     // Rules for how to prioritize token merging. Lower indices take priority.
-    uint32_t tokenIdBos, tokenIdEos, tokenIdUnknown, tokenIdPadding, tokenIdMask;
+    uint32_t tokenIdBos, tokenIdEos, tokenIdUnknown, tokenIdPadding, tokenIdMask, tokenEndOfTurn;
 } Tokenizer_t;
 
 /**

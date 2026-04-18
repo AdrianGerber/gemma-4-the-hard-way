@@ -122,12 +122,18 @@ Tokenizer_t Tokenizer_Init(GGUF_Metadata_t *metadata, size_t count)
     tokenizer.tokenIdUnknown = tokenIdUnknown->value.uint32;
     tokenizer.tokenIdPadding = tokenIdPadding->value.uint32;
     tokenizer.tokenIdMask = tokenIdMask->value.uint32;
-    printf("- Loaded special tokens (bos=%u, eos=%u, unknown=%u, padding=%u, mask=%u)\n",
+
+    const char endOfTurn[] = "<turn|>";
+    tokenizer.tokenEndOfTurn = StringToToken(tokenizer, endOfTurn, sizeof(endOfTurn) - 1);
+    assert(tokenizer.tokenEndOfTurn != tokenizer.tokenIdUnknown);
+
+    printf("- Loaded special tokens (bos=%u, eos=%u, unknown=%u, padding=%u, mask=%u, tokenEndOfTurn=%u)\n",
            tokenizer.tokenIdBos,
            tokenizer.tokenIdEos,
            tokenizer.tokenIdUnknown,
            tokenizer.tokenIdPadding,
-           tokenizer.tokenIdMask);
+           tokenizer.tokenIdMask,
+           tokenizer.tokenEndOfTurn);
 
     const GGUF_Metadata_t *addSpacePrefix = GGUF_MetadataFindByKey(metadata, count, "tokenizer.ggml.add_space_prefix");
     const GGUF_Metadata_t *addBosToken = GGUF_MetadataFindByKey(metadata, count, "tokenizer.ggml.add_bos_token");

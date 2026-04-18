@@ -249,7 +249,7 @@ void Model_GenerateCompletionsToStdOut(Model_t *model, const char *prompt)
     fflush(stdout);
 
     // Start predicting more future tokens by feeding the model's output back into itself.
-    while (token != model->tokenizer.tokenIdEos)
+    while ((token != model->tokenizer.tokenIdEos) && (token != model->tokenizer.tokenEndOfTurn))
     {
         logits = ForwardProcess(model, runtimeData, token, position, false);
         assert(logits);
