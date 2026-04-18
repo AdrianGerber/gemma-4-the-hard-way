@@ -2,33 +2,82 @@
 
 ## Objectives
 
-Create a C program that can run inference using one of Google's new [Gemma 4](https://blog.google/innovation-and-ai/technology/developers-tools/gemma-4/) model(s). Dependencies other than the standard library and operating system headers must be avoided. The primary objective is learning more about LLM architecture and what it takes to run such models.
-
-### Rules / Concept / Specification:
-
-- Create a command line application that can run LLM inference.
-- Weights are parsed from a GGUF file.
-- This project is about learning the details. AI coding assistants and agents may not be used to generate any part of the code except for unit tests.
-- Performance, compatibility, portability and reusability are not priorities.
-- No pre-existing code, except for the C standard library, operating system headers for mmap and a unit testing framework are used. I know that this means "re-inventing the wheel" and that's the whole point of this project.
+A C program that can run inference using one of Google's new [Gemma 4](https://blog.google/innovation-and-ai/technology/developers-tools/gemma-4/) models. Dependencies other than the standard library and operating system headers must be avoided. The primary objective is learning more about LLM architecture and what it takes to run such models.
 
 ## Usage
 
 See VSCode configure and build tasks.
 
-```sh
-# Configure
-gemma-4-the-hard-way$ cmake -Bbuild .
-# Build
-gemma-4-the-hard-way$ cmake --build build
-# Test
-gemma-4-the-hard-way$ ctest --test-dir build
+### Configure CMake
 
-# Download model
+```sh
+gemma-4-the-hard-way$ cmake -Bbuild .
+```
+
+### Build
+
+```sh
+gemma-4-the-hard-way$ cmake --build build
+```
+
+### Download the Model
+
+```sh
 gemma-4-the-hard-way$ wget https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-e2b-it-Q8_0.gguf
 ```
 
-## References
+### Run inference
+
+```
+gemma-4-the-hard-way$ ./build/gemma_4_the_hard_way "Please tell a joke about a large language model."
+...
+Generating Predictions:
+
+Here are a few jokes about large language models, depending on the style you prefer:
+
+**Option 1: Self-Aware/A Bit Meta**
+
+> Why did the large language model break up with the search engine?
+>
+> Because it felt like their relationship was too reliant on repetitive queries and lacked any real *context*!
+
+**Option 2: Poking Fun at the Output**
+
+> A user asked an LLM to write a poem about a cat.
+>
+> The model responded with a 10,000-word epic detailing the cat's existential dread, its relationship with the sunbeam, and its philosophical observations on tuna. The user just wanted a haiku.
+
+**Option 3: The Technical Joke**
+
+> What do you call an LLM that can't stop generating tangents?
+>
+> A recursive loop with a strong sense of *flow*!
+
+**Which one do you like best?** 😊<turn|>
+```
+
+## Project Details
+
+### Idea / Specification:
+
+- Create a command line application that can run LLM inference.
+- Performance, compatibility, portability and reusability are not priorities.
+- Weights are parsed from a GGUF file. The model file can be assumed to be valid. Hardening against malformed or malicious files is not required.
+- This project is about learning the details. AI may be used for research, learning, review and debugging purposes, but not for code generation or completion.
+- No pre-existing code, except for the C standard library and basic operating system headers (e.g. mmap) must be included. I know that this means "re-inventing the wheel" and that's the whole point of this project.
+- No advanced error handling is needed. The program can use simple asserts to terminate on issues (e.g. dimension mismatch or failed malloc). This means that it is not safe to run the code with asserts disabled.
+
+### Lessons Learned
+
+- I found the attention layer (including the KV cache) challenging to understand and implement. At least now I understand why context size is so computationally expensive :).
+- C is not the most comfortable language for tasks where everything is as painfully dynamic as in machine learning. On the other hand, it would allow you to really optimize the code and buffers if you wanted to.  
+- It would've been easier to start with a simpler language model. While gemma-4-e2b-it-Q8_0 is suprisingly powerful, it has some architectural specialties that I had to find out about the hard way :). I initially got very confused by the cache reuse and the alternating global / SWA layers.
+- llama.cpp has great debugging options. It became my main way of identifying mistakes (e.g. misunderstood model structure / data flow, math errors, ...). Comparing against `llama-debug -m gemma-4-e2b-it-Q8_0.gguf -p "<bos>\n"` was very valuable.
+- I initially set this project up with unit tests, but it turned out that these didn't help that much and so I deleted them. In my opinion, unit tests are essential when building and maintaining projects. However, using them in a way that makes sense here is non-trivial. Of course I could test my math primitives in different cases and this would likely also have helped find a few bugs, but the project's main challenge was figuring out the overall data flow and model structure - and it's very difficult to come up with test cases if you are dealing with huge matrices and don't even know the expected result. I guess the llama-debug traces ended up as a sort of "manual" unit tests. Maybe I could've automated this in some way.
+- Having to parse the GGUF file and build the tokenizer added maybe 30% of complexity to the project. However, it was very useful in understanding the different data types and getting to know the basic model structure.
+- Not focusing on performance was a good idea. There is so much additional complexity that would come form trying to optimize everything right away.
+
+### References
 
 Any accessed external documentation, tutorials and reference material will be declared in this section.
 
@@ -43,5 +92,5 @@ Any accessed external documentation, tutorials and reference material will be de
 - [PyTorch RMSNorm Documentation](https://docs.pytorch.org/docs/stable/generated/torch.nn.modules.normalization.RMSNorm.html)
 - [PyTorch GELU Documentation](https://docs.pytorch.org/docs/stable/generated/torch.nn.GELU.html)
 - [Mastering Gemma 4: A Comprehensive Deep Dive into Google's Next-Generation Open Model Architecture and Deployment](https://dev.to/jubinsoni/mastering-gemma-4-a-comprehensive-deep-dive-into-googles-next-generation-open-model-architecture-2f91)
-- [llama.cpp](https://github.com/ggml-org/llama.cpp) to dump known-good internal layer vectors to debug against.
+- [llama.cpp](https://github.com/ggml-org/llama.cpp) to dump known-good internal vectors to debug against.
 - [Wikipedia: Attention (Machine Learning)](https://en.wikipedia.org/wiki/Attention_(machine_learning))
