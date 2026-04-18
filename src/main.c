@@ -23,6 +23,10 @@
  * SOFTWARE.
  *
  */
+
+/******************************************************************************
+ * Includes
+ ******************************************************************************/
 #include <stdio.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -34,17 +38,41 @@
 #include <sys/stat.h>
 #include "GGUF.h"
 #include <string.h>
+#include <time.h>
 #include <assert.h>
 #include "Model.h"
 
-int main(void)
+/******************************************************************************
+ * Constants and Macros
+ ******************************************************************************/
+#define PROMPT_TEMPLATE "<bos>\n"       \
+                        "<|turn>user\n" \
+                        "%s<turn|>\n"   \
+                        "<|turn>model\n"
+
+/******************************************************************************
+ * Function Implementations
+ ******************************************************************************/
+
+int main(int argc, char *argv[])
 {
+    // Get prompt from command line, fall back to Hello World.
+    const char *userPrompt = "Hello World";
+    if (argc == 2)
+    {
+        userPrompt = argv[1];
+    }
+
+    // Seed pseudo-random sampling for the response tokens (not great for debugging)
+    srand((unsigned int)time(NULL));
+
     // Map the file content into memory
-    const char *filename = "gemma-4-e2b-it-Q8_0.gguf";
-    int f = open(filename, O_RDONLY);
+    const char *modelFilename = "gemma-4-e2b-it-Q8_0.gguf";
+    int f = open(modelFilename, O_RDONLY);
     if (f == -1)
     {
         perror("open failed");
+        fprintf(stderr, "Failed to access model %s\n", modelFilename);
         exit(1);
     }
     struct stat fileStat;
@@ -68,14 +96,20 @@ int main(void)
     {
         printf("\n\n");
 
-        const char *prompt =
-            "<bos>\n"
-            "<|turn>user\n"
-            "Hello world<turn|>\n"
-            "<|turn>model\n";
+        // Format according to the prompt template expected by the model.
+        const size_t promptTemplateLength = strlen(PROMPT_TEMPLATE);
+        const size_t userPromptLength = strlen(userPrompt);
+        const size_t totalLength = promptTemplateLength + userPromptLength;
+        char *prompt = malloc(totalLength);
+        assert(prompt);
+        snprintf(prompt, totalLength, PROMPT_TEMPLATE, userPrompt);
 
+        // Run inference.
         Model_GenerateCompletionsToStdOut(model, prompt);
 
+        // Cleanup
+        free(prompt);
+        prompt = NULL;
         Model_Release(model);
         model = NULL;
     }
