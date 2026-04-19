@@ -136,11 +136,22 @@ void MultiplyMatrixAndVector(float *restrict out, size_t outCount, const float *
             for (size_t block = 0; block < blocksPerRow; block++)
             {
                 const float scale = GGUF_Float16ToFloat(rowBlocks[block].scale);
-                for (size_t quantizedIndex = 0; quantizedIndex < blockSize; quantizedIndex++)
+                const float *inputBlock = input + block * blockSize;
+                const int8_t *quanized = rowBlocks[block].quantized;
+
+                // Unroll the loop using 4 temporary sums to break the dependency chain and
+                // allow better optimizations by the compiler.
+                float sum0 = 0.0f, sum1 = 0.0f, sum2 = 0.0f, sum3 = 0.0f;
+                for (size_t i = 0; i < blockSize; i += 4)
                 {
-                    const float matrixWeight = scale * (float)rowBlocks[block].quantized[quantizedIndex];
-                    dotProduct += input[block * blockSize + quantizedIndex] * matrixWeight;
+                    sum0 += inputBlock[i + 0] * (float)quanized[i + 0];
+                    sum1 += inputBlock[i + 1] * (float)quanized[i + 1];
+                    sum2 += inputBlock[i + 2] * (float)quanized[i + 2];
+                    sum3 += inputBlock[i + 3] * (float)quanized[i + 3];
                 }
+
+                // Save 16 multiplications per block by applying the scale once after each block.
+                dotProduct += scale * (sum0 + sum1 + sum2 + sum3);
             }
             out[row] = dotProduct;
         }

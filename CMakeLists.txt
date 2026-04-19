@@ -13,10 +13,12 @@ if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
         -Wsign-conversion
         -Werror
         -Wformat=2
-        -O2 -g
+        -O3 -g
         -Wundef
         -Wstrict-prototypes
         -Wmissing-prototypes
+        -ffast-math
+        -march=native
         # -fanalyzer --> fanalyzer really doesn't seem to like returning pointers to malloc'd data in a struct by value. My code may well have other memory leaks, but I don't think fanalyzer is correct there.
         # -fsanitize=address --> I disabled this because of the performance impact, but at the moment it doesn't find any leaks or out-of-bounds accesses when enabled.
     )

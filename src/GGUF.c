@@ -349,36 +349,6 @@ const uint8_t *GGUF_SkipHeader(const uint8_t *data)
     return data + 24;
 }
 
-float GGUF_Float16ToFloat(float16_t input)
-{
-    assert(sizeof(float) == 4);
-
-    // Float 16 conversion taken from libcanard.
-    // Commit 636795f
-    // MIT License.
-    // https://github.com/OpenCyphal/libcanard/blob/636795f4bc395f56af8d2c61d3757b5e762bb9e5/canard.c#L811-L834
-
-    union FP32
-    {
-        uint32_t u;
-        float f;
-    };
-
-    const union FP32 magic = {(254UL - 15UL) << 23};
-    const union FP32 was_inf_nan = {(127UL + 16UL) << 23};
-    union FP32 out;
-
-    out.u = (input & 0x7FFFU) << 13;
-    out.f *= magic.f;
-    if (out.f >= was_inf_nan.f)
-    {
-        out.u |= 255UL << 23;
-    }
-    out.u |= (input & 0x8000UL) << 16;
-
-    return out.f;
-}
-
 /******************************************************************************
  * Private Function Implementations
  ******************************************************************************/
