@@ -452,11 +452,20 @@ static void RunAttention(Model_t *model, RuntimeData_t *runtimeData, uint32_t bl
     // Starting from block 15, the KV cache is shared. Global attention layers must access
     // block 14's cache, while SWA layers use block 13. This preserves the dimensions.
     const size_t firstLayerWithSharedKV = model->blockCount - model->weights.sharedAttentionLayerCount;
-    const size_t swaSharedKVLayer = firstLayerWithSharedKV - 2;
-    const size_t globalSharedKVLayer = firstLayerWithSharedKV - 1;
-    const bool useSharedKVCache = blockNumber < firstLayerWithSharedKV;
+    const size_t swaSharedKVBlock = firstLayerWithSharedKV - 2;
+    const size_t globalSharedKVBlock = firstLayerWithSharedKV - 1;
+    const bool accessSharedKVCache = (blockNumber >= firstLayerWithSharedKV);
+    size_t cacheBlockIndex = blockNumber;
+    if (accessSharedKVCache)
+    {
+        cacheBlockIndex = globalAttention ? globalSharedKVBlock : swaSharedKVBlock;
+    }
 
-    if (useSharedKVCache)
+    float *kvCache = runtimeData->kvCache + runtimeData->kvCacheOffsets[cacheBlockIndex];
+
+    // Layers >= 15 access the KV values directly from the layer 13/14 cache. This means that
+    // we can just skip these calculations on later layers and don't need to copy anything.
+    if (!accessSharedKVCache)
     {
         // For layers without cache reuse (block < 15), we have to calculate both K and V.
         // This is done by projecting the model state onto the 'key' and 'value' vectors.
@@ -477,16 +486,11 @@ static void RunAttention(Model_t *model, RuntimeData_t *runtimeData, uint32_t bl
         ApplyRoPE(runtimeData->k, kDimension, headDimension, position, ropeBase);
         DEBUG_TENSOR(runtimeData->q, qDimension);
         DEBUG_TENSOR(runtimeData->k, kDimension);
-    }
-    else
-    {
-        // Layers >= 15 reuse the KV cache values from layer 13/14
-        // This means that we can just load these vectors from the cache and also don't need to apply any rotation.
-        const size_t anchorLayer = globalAttention ? globalSharedKVLayer : swaSharedKVLayer;
-        const float *kvCacheShared = runtimeData->kvCache + runtimeData->kvCacheOffsets[anchorLayer];
-        const float *kvCacheSharedForToken = kvCacheShared + position * (kDimension + vDimension);
-        memcpy(runtimeData->k, kvCacheSharedForToken, kDimension * sizeof(float));
-        memcpy(runtimeData->v, kvCacheSharedForToken + kDimension, vDimension * sizeof(float));
+
+        // Update Cache
+        float *kvCacheForToken = kvCache + position * (kDimension + vDimension);
+        memcpy(kvCacheForToken, runtimeData->k, kDimension * sizeof(float));
+        memcpy(kvCacheForToken + kDimension, runtimeData->v, vDimension * sizeof(float));
     }
 
     /******************************************************************************
@@ -514,17 +518,6 @@ static void RunAttention(Model_t *model, RuntimeData_t *runtimeData, uint32_t bl
     DEBUG_TENSOR(runtimeData->q, qDimension);
 
     /******************************************************************************
-     * Update KV Cache
-     ******************************************************************************/
-    // TODO: I think it might be better to have seperate buffers for the K and V values.
-    //       We might also be able to reduce the allocated KV cache size since attention
-    //       layers from 15 onwards reuse the earlier cache.
-    float *kvCacheForLayer = runtimeData->kvCache + runtimeData->kvCacheOffsets[blockNumber];
-    float *kvCacheForToken = kvCacheForLayer + position * (kDimension + vDimension);
-    memcpy(kvCacheForToken, runtimeData->k, kDimension * sizeof(float));
-    memcpy(kvCacheForToken + kDimension, runtimeData->v, vDimension * sizeof(float));
-
-    /******************************************************************************
      * Blend Cached Values
      ******************************************************************************/
     // Global attention starts from 0 every time, while Sliding Window Attention
@@ -544,7 +537,7 @@ static void RunAttention(Model_t *model, RuntimeData_t *runtimeData, uint32_t bl
         const size_t kvHead = head / (headCount / kvHeadCount);
         for (size_t tokenPos = startPosition; tokenPos <= position; tokenPos++)
         {
-            const float *tokenKey = runtimeData->kvCache + runtimeData->kvCacheOffsets[blockNumber] + tokenPos * (kDimension + vDimension) + (kvHead * headDimension);
+            const float *tokenKey = kvCache + tokenPos * (kDimension + vDimension) + (kvHead * headDimension);
             runtimeData->attentionScores[tokenPos] = DotProduct(qHead, tokenKey, headDimension); // / sqrtf(headDimension); <-- This is a mistake that cost me like 4 hours to find :)
         }
 
@@ -558,7 +551,7 @@ static void RunAttention(Model_t *model, RuntimeData_t *runtimeData, uint32_t bl
         for (size_t tokenPos = startPosition; tokenPos <= position; tokenPos++)
         {
             const size_t offsetForValue = tokenPos * (kDimension + vDimension) + kDimension + (kvHead * headDimension);
-            const float *valueInCache = runtimeData->kvCache + runtimeData->kvCacheOffsets[blockNumber] + offsetForValue;
+            const float *valueInCache = kvCache + offsetForValue;
             AddScaledTensor(outputHead, outputHead, valueInCache, runtimeData->attentionScores[tokenPos], headDimension);
         }
         DEBUG_TENSOR((runtimeData->vMixed + headDimension * head), vDimension);
@@ -821,13 +814,16 @@ static RuntimeData_t *AllocateRuntimeData(Model_t *model)
 
     // Perpare attention constants
     // Determine the total size needed to hold the variable-width attention vectors for each layer.
+    // Attention layers >= 15 just read the cache from layer 13/14 and don't need to be considered
+    // when allocating the cache.
     size_t maxQ = 0;
     size_t maxK = 0;
     size_t maxV = 0;
-    tmp->kvCacheOffsets = malloc(model->blockCount * sizeof(size_t));
+    const size_t blocksWithOwnKVCache = model->blockCount - model->weights.sharedAttentionLayerCount;
+    tmp->kvCacheOffsets = malloc(blocksWithOwnKVCache * sizeof(size_t));
     assert(tmp->kvCacheOffsets);
     size_t kvCacheSize = 0;
-    for (size_t block = 0; block < model->blockCount; block++)
+    for (size_t block = 0; block < blocksWithOwnKVCache; block++)
     {
         // Store the offset of each layer's cache for later access.
         tmp->kvCacheOffsets[block] = kvCacheSize;
