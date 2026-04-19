@@ -187,7 +187,7 @@ void SoftMax(float *output, const float *input, size_t count)
 {
     // Find the maximum value first. This is then subtracted from all values to avoid numberical stability issues.
     float max = -INFINITY;
-    for (size_t i = 0; i <= count; i++)
+    for (size_t i = 0; i < count; i++)
     {
         if (input[i] > max)
         {
@@ -196,12 +196,12 @@ void SoftMax(float *output, const float *input, size_t count)
     }
 
     float sum = 0.0f;
-    for (size_t i = 0; i <= count; i++)
+    for (size_t i = 0; i < count; i++)
     {
         output[i] = expf(input[i] - max);
         sum += output[i];
     }
-    for (size_t i = 0; i <= count; i++)
+    for (size_t i = 0; i < count; i++)
     {
         output[i] /= sum;
     }

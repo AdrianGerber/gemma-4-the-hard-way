@@ -542,7 +542,7 @@ static void RunAttention(Model_t *model, RuntimeData_t *runtimeData, uint32_t bl
         }
 
         // Softmax
-        SoftMax(runtimeData->attentionScores + startPosition, runtimeData->attentionScores + startPosition, position - startPosition);
+        SoftMax(runtimeData->attentionScores + startPosition, runtimeData->attentionScores + startPosition, position - startPosition + 1);
 
         // Add up all the cached values while scaling them. Values are weighted
         // based on the similarity between the model's query and the value's key.
