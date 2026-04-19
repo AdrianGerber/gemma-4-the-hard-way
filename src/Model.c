@@ -414,8 +414,8 @@ static void RunAttention(Model_t *model, RuntimeData_t *runtimeData, uint32_t bl
 {
     const BlockWeights_t *layerWeights = model->weights.blocks + blockNumber;
 
-    RMSNormWithWeights(runtimeData->tmp1, runtimeData->x, model->weights.rmsNormEpsilon, layerWeights->attn_norm, model->embeddingLength);
-    DEBUG_TENSOR(runtimeData->tmp1, model->embeddingLength);
+    RMSNormWithWeights(runtimeData->xTmp, runtimeData->x, model->weights.rmsNormEpsilon, layerWeights->attn_norm, model->embeddingLength);
+    DEBUG_TENSOR(runtimeData->xTmp, model->embeddingLength);
 
     /******************************************************************************
      * Prepare Constants
@@ -469,8 +469,8 @@ static void RunAttention(Model_t *model, RuntimeData_t *runtimeData, uint32_t bl
     {
         // For layers without cache reuse (block < 15), we have to calculate both K and V.
         // This is done by projecting the model state onto the 'key' and 'value' vectors.
-        MultiplyMatrixAndVector(runtimeData->k, kDimension, runtimeData->tmp1, model->embeddingLength, layerWeights->attn_k);
-        MultiplyMatrixAndVector(runtimeData->v, vDimension, runtimeData->tmp1, model->embeddingLength, layerWeights->attn_v);
+        MultiplyMatrixAndVector(runtimeData->k, kDimension, runtimeData->xTmp, model->embeddingLength, layerWeights->attn_k);
+        MultiplyMatrixAndVector(runtimeData->v, vDimension, runtimeData->xTmp, model->embeddingLength, layerWeights->attn_v);
         DEBUG_TENSOR(runtimeData->k, kDimension);
         DEBUG_TENSOR(runtimeData->v, vDimension);
 
@@ -498,7 +498,7 @@ static void RunAttention(Model_t *model, RuntimeData_t *runtimeData, uint32_t bl
      ******************************************************************************/
     // The query vector is also projected from the model state. It indicates what keys in the
     // KV cache are the most relevant to the current state.
-    MultiplyMatrixAndVector(runtimeData->q, qDimension, runtimeData->tmp1, model->embeddingLength, layerWeights->attn_q);
+    MultiplyMatrixAndVector(runtimeData->q, qDimension, runtimeData->xTmp, model->embeddingLength, layerWeights->attn_q);
     DEBUG_TENSOR(runtimeData->q, qDimension);
 
     // We are dealing with multi-head attention so the query consists of multiple heads. In essence, the model
@@ -561,16 +561,16 @@ static void RunAttention(Model_t *model, RuntimeData_t *runtimeData, uint32_t bl
      * Finalize Attention Output
      ******************************************************************************/
     // Project back to the model state
-    MultiplyMatrixAndVector(runtimeData->tmp2, model->embeddingLength, runtimeData->vMixed, qDimension, layerWeights->attn_output);
-    DEBUG_TENSOR(runtimeData->tmp2, model->embeddingLength);
+    MultiplyMatrixAndVector(runtimeData->xTmp, model->embeddingLength, runtimeData->vMixed, qDimension, layerWeights->attn_output);
+    DEBUG_TENSOR(runtimeData->xTmp, model->embeddingLength);
 
     // Normalization
-    RMSNormWithWeights(runtimeData->tmp2, runtimeData->tmp2, model->weights.rmsNormEpsilon, layerWeights->post_attention_norm, model->embeddingLength);
-    DEBUG_TENSOR(runtimeData->tmp2, model->embeddingLength);
+    RMSNormWithWeights(runtimeData->xTmp, runtimeData->xTmp, model->weights.rmsNormEpsilon, layerWeights->post_attention_norm, model->embeddingLength);
+    DEBUG_TENSOR(runtimeData->xTmp, model->embeddingLength);
 
     // Add back original scaled token embedding
-    AddTensors(runtimeData->tmp1, runtimeData->tmp2, runtimeData->x, model->embeddingLength);
-    DEBUG_TENSOR(runtimeData->tmp1, model->embeddingLength);
+    AddTensors(runtimeData->x, runtimeData->xTmp, runtimeData->x, model->embeddingLength);
+    DEBUG_TENSOR(runtimeData->x, model->embeddingLength);
 }
 
 static void RunFeedForward(Model_t *model, RuntimeData_t *runtimeData, uint32_t blockNumber)
@@ -580,8 +580,8 @@ static void RunFeedForward(Model_t *model, RuntimeData_t *runtimeData, uint32_t 
     /******************************************************************************
      * Normalization
      ******************************************************************************/
-    RMSNormWithWeights(runtimeData->tmp2, runtimeData->tmp1, model->weights.rmsNormEpsilon, layerWeights->ffn_norm, model->embeddingLength);
-    DEBUG_TENSOR(runtimeData->tmp2, model->embeddingLength);
+    RMSNormWithWeights(runtimeData->xTmp, runtimeData->x, model->weights.rmsNormEpsilon, layerWeights->ffn_norm, model->embeddingLength);
+    DEBUG_TENSOR(runtimeData->xTmp, model->embeddingLength);
 
     /******************************************************************************
      * Feed Forward Network
@@ -596,8 +596,8 @@ static void RunFeedForward(Model_t *model, RuntimeData_t *runtimeData, uint32_t 
     const size_t hiddenDimension = layerWeights->ffn_gate->dimensions[1];
 
     // Up projection
-    MultiplyMatrixAndVector(runtimeData->ffnHiddenGate, hiddenDimension, runtimeData->tmp2, model->embeddingLength, layerWeights->ffn_gate);
-    MultiplyMatrixAndVector(runtimeData->ffnHiddenUp, hiddenDimension, runtimeData->tmp2, model->embeddingLength, layerWeights->ffn_up);
+    MultiplyMatrixAndVector(runtimeData->ffnHiddenGate, hiddenDimension, runtimeData->xTmp, model->embeddingLength, layerWeights->ffn_gate);
+    MultiplyMatrixAndVector(runtimeData->ffnHiddenUp, hiddenDimension, runtimeData->xTmp, model->embeddingLength, layerWeights->ffn_up);
     DEBUG_TENSOR(runtimeData->ffnHiddenGate, hiddenDimension);
     DEBUG_TENSOR(runtimeData->ffnHiddenUp, hiddenDimension);
 
@@ -612,23 +612,22 @@ static void RunFeedForward(Model_t *model, RuntimeData_t *runtimeData, uint32_t 
     DEBUG_TENSOR(runtimeData->ffnHiddenGate, hiddenDimension);
 
     // Down projection
-    MultiplyMatrixAndVector(runtimeData->tmp2, model->embeddingLength, runtimeData->ffnHiddenGate, hiddenDimension, layerWeights->ffn_down);
-    DEBUG_TENSOR(runtimeData->tmp2, model->embeddingLength);
+    MultiplyMatrixAndVector(runtimeData->xTmp, model->embeddingLength, runtimeData->ffnHiddenGate, hiddenDimension, layerWeights->ffn_down);
+    DEBUG_TENSOR(runtimeData->xTmp, model->embeddingLength);
 
     /******************************************************************************
      * Finalize FFN Ouput
      ******************************************************************************/
-    RMSNormWithWeights(runtimeData->tmp2, runtimeData->tmp2, model->weights.rmsNormEpsilon, layerWeights->post_ffw_norm, model->embeddingLength);
+    RMSNormWithWeights(runtimeData->xTmp, runtimeData->xTmp, model->weights.rmsNormEpsilon, layerWeights->post_ffw_norm, model->embeddingLength);
 
     // Add back in the original input (= attention output)
-    AddTensors(runtimeData->tmp2, runtimeData->tmp2, runtimeData->tmp1, model->embeddingLength);
-    DEBUG_TENSOR(runtimeData->tmp2, model->embeddingLength);
+    AddTensors(runtimeData->x, runtimeData->xTmp, runtimeData->x, model->embeddingLength);
+    DEBUG_TENSOR(runtimeData->x, model->embeddingLength);
 }
 
 static void RunInjection(Model_t *model, RuntimeData_t *runtimeData, uint32_t blockNumber)
 {
     const BlockWeights_t *layerWeights = model->weights.blocks + blockNumber;
-    CopyTensor(runtimeData->residuals, runtimeData->tmp2, model->embeddingLength);
 
     /******************************************************************************
      * Down Projection
@@ -636,7 +635,7 @@ static void RunInjection(Model_t *model, RuntimeData_t *runtimeData, uint32_t bl
     assert(layerWeights->inp_gate);
     assert(layerWeights->inp_gate->dimensionCount == 2);
     const size_t perLayerInjectedSize = layerWeights->inp_gate->dimensions[1];
-    MultiplyMatrixAndVector(runtimeData->downProjected, perLayerInjectedSize, runtimeData->tmp2, model->embeddingLength, layerWeights->inp_gate);
+    MultiplyMatrixAndVector(runtimeData->downProjected, perLayerInjectedSize, runtimeData->x, model->embeddingLength, layerWeights->inp_gate);
     DEBUG_TENSOR(runtimeData->downProjected, perLayerInjectedSize);
 
     // Activation function
@@ -647,7 +646,7 @@ static void RunInjection(Model_t *model, RuntimeData_t *runtimeData, uint32_t bl
      * Inject Embedding
      ******************************************************************************/
     const size_t offset = blockNumber * perLayerInjectedSize;
-    float *currentContext = runtimeData->tmp1; // Reusing the first 256 indices of tmp1
+    float *currentContext = runtimeData->xTmp; // Reusing the first 256 indices of xTmp
     RMSNormWithWeights(currentContext, runtimeData->allLayerModelProjections + offset, model->weights.rmsNormEpsilon, model->weights.per_layer_proj_norm, perLayerInjectedSize);
 
     AddTensors(currentContext, currentContext, runtimeData->perLayerEmbeddings + offset, perLayerInjectedSize);
@@ -659,17 +658,17 @@ static void RunInjection(Model_t *model, RuntimeData_t *runtimeData, uint32_t bl
      * Project back up
      ******************************************************************************/
     assert(layerWeights->proj);
-    MultiplyMatrixAndVector(runtimeData->tmp1, model->embeddingLength, runtimeData->downProjected, perLayerInjectedSize, layerWeights->proj);
-    DEBUG_TENSOR(runtimeData->tmp1, model->embeddingLength);
+    MultiplyMatrixAndVector(runtimeData->xTmp, model->embeddingLength, runtimeData->downProjected, perLayerInjectedSize, layerWeights->proj);
+    DEBUG_TENSOR(runtimeData->xTmp, model->embeddingLength);
 
-    RMSNormWithWeights(runtimeData->tmp1, runtimeData->tmp1, model->weights.rmsNormEpsilon, layerWeights->post_norm, model->embeddingLength);
-    DEBUG_TENSOR(runtimeData->tmp1, model->embeddingLength);
+    RMSNormWithWeights(runtimeData->xTmp, runtimeData->xTmp, model->weights.rmsNormEpsilon, layerWeights->post_norm, model->embeddingLength);
+    DEBUG_TENSOR(runtimeData->xTmp, model->embeddingLength);
 
-    AddTensors(runtimeData->tmp1, runtimeData->tmp2, runtimeData->tmp1, model->embeddingLength);
+    AddTensors(runtimeData->xTmp, runtimeData->x, runtimeData->xTmp, model->embeddingLength);
     assert(layerWeights->layer_output_scale);
     assert(layerWeights->layer_output_scale->type == GGML_TYPE_F32);
     assert(layerWeights->layer_output_scale->dimensions[0] == 1);
-    ScaleTensor(runtimeData->x, runtimeData->tmp1, layerWeights->layer_output_scale->data.float32[0], model->embeddingLength);
+    ScaleTensor(runtimeData->x, runtimeData->xTmp, layerWeights->layer_output_scale->data.float32[0], model->embeddingLength);
     DEBUG_TENSOR(runtimeData->x, model->embeddingLength);
 }
 
@@ -807,10 +806,8 @@ static RuntimeData_t *AllocateRuntimeData(Model_t *model)
 
     // General buffers
     tmp->x = malloc(model->embeddingLength * sizeof(float));
-    tmp->residuals = malloc(model->embeddingLength * sizeof(float));
-    tmp->tmp1 = malloc(model->embeddingLength * sizeof(float));
-    tmp->tmp2 = malloc(model->embeddingLength * sizeof(float));
-    assert(tmp->x && tmp->residuals && tmp->tmp1 && tmp->tmp2);
+    tmp->xTmp = malloc(model->embeddingLength * sizeof(float));
+    assert(tmp->x && tmp->xTmp);
 
     // Perpare attention constants
     // Determine the total size needed to hold the variable-width attention vectors for each layer.
@@ -901,9 +898,7 @@ void ReleaseRuntimeData(RuntimeData_t *data)
     {
         free(data->logits);
         free(data->x);
-        free(data->residuals);
-        free(data->tmp1);
-        free(data->tmp2);
+        free(data->xTmp);
         free(data->perLayerEmbeddings);
         free(data->allLayerModelProjections);
         free(data->downProjected);

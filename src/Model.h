@@ -92,8 +92,7 @@ typedef struct
 {
     // General buffers
     float *x;
-    float *residuals;
-    float *tmp1, *tmp2;
+    float *xTmp;
 
     // Attention
     float *q;
