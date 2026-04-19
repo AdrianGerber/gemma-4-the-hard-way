@@ -1,7 +1,7 @@
 /**
  * @file      Model.c
  * @author    Adrian Gerber
- * @brief     Bare-minimum implementation for working with language models.
+ * @brief     Bare-minimum implementation for the gemma-4-e2b-it-Q8_0 language model.
  * @copyright Copyright (c) 2026 Adrian Gerber
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -51,16 +51,18 @@
 /******************************************************************************
  * Private Function Prototypes
  ******************************************************************************/
-static const GGUF_TensorInfo_t *GetTensorForBlock(Model_t *model, size_t blockIndex, const char *tensorName);
 static float *ForwardProcess(Model_t *model, RuntimeData_t *runtimeData, uint32_t token, uint32_t position, bool preFill);
 static uint32_t SelectTokenFromLogits(Model_t *model, RuntimeData_t *runtimeData, float *logits);
-static RuntimeData_t *AllocateRuntimeData(Model_t *model);
-static void ReleaseRuntimeData(RuntimeData_t *data);
 static void RunAttention(Model_t *model, RuntimeData_t *runtimeData, uint32_t blockNumber, uint32_t position);
 static void RunFeedForward(Model_t *model, RuntimeData_t *runtimeData, uint32_t blockNumber);
 static void RunInjection(Model_t *model, RuntimeData_t *runtimeData, uint32_t blockNumber);
 static float *RunClassifier(Model_t *model, RuntimeData_t *runtimeData);
+
+// General utility functions
 static int CompareTokenProbabilities(const void *a, const void *b);
+static RuntimeData_t *AllocateRuntimeData(Model_t *model);
+static void ReleaseRuntimeData(RuntimeData_t *data);
+static const GGUF_TensorInfo_t *GetTensorForBlock(Model_t *model, size_t blockIndex, const char *tensorName);
 
 /******************************************************************************
  * Public Function Implementations
@@ -165,21 +167,18 @@ Model_t *Model_LoadFromGGUF(const uint8_t *data, size_t length)
         model->weights.blocks[i].post_ffw_norm = GetTensorForBlock(model, i, "post_ffw_norm.weight");
         model->weights.blocks[i].post_norm = GetTensorForBlock(model, i, "post_norm.weight");
         model->weights.blocks[i].proj = GetTensorForBlock(model, i, "proj.weight");
-        // At least one tensor is needed per block
-        assert(0 < (model->weights.blocks[i].attn_k != NULL) + (model->weights.blocks[i].attn_k_norm != NULL) + (model->weights.blocks[i].attn_norm != NULL) + (model->weights.blocks[i].attn_output != NULL) + (model->weights.blocks[i].attn_q != NULL) + (model->weights.blocks[i].attn_q_norm != NULL) + (model->weights.blocks[i].attn_v != NULL) + (model->weights.blocks[i].ffn_down != NULL) + (model->weights.blocks[i].ffn_gate != NULL) + (model->weights.blocks[i].ffn_norm != NULL) + (model->weights.blocks[i].ffn_up != NULL) + (model->weights.blocks[i].inp_gate != NULL) + (model->weights.blocks[i].layer_output_scale != NULL) + (model->weights.blocks[i].post_attention_norm != NULL) + (model->weights.blocks[i].post_ffw_norm != NULL) + (model->weights.blocks[i].post_norm != NULL) + (model->weights.blocks[i].proj != NULL));
+        // Note: Not all weights might be present on all layers. Availability needs to be checked before use.
     }
 
     model->weights.output_norm = GGUF_TensorFindByName(model->tensorInfo, model->tensorInfoCount, "output_norm.weight");
     model->weights.per_layer_model_proj = GGUF_TensorFindByName(model->tensorInfo, model->tensorInfoCount, "per_layer_model_proj.weight");
     model->weights.per_layer_proj_norm = GGUF_TensorFindByName(model->tensorInfo, model->tensorInfoCount, "per_layer_proj_norm.weight");
     model->weights.per_layer_token_embd = GGUF_TensorFindByName(model->tensorInfo, model->tensorInfoCount, "per_layer_token_embd.weight");
-    model->weights.rope_freqs = GGUF_TensorFindByName(model->tensorInfo, model->tensorInfoCount, "rope_freqs.weight");
     model->weights.token_embd = GGUF_TensorFindByName(model->tensorInfo, model->tensorInfoCount, "token_embd.weight");
     assert(model->weights.output_norm);
     assert(model->weights.per_layer_model_proj);
     assert(model->weights.per_layer_proj_norm);
     assert(model->weights.per_layer_token_embd);
-    assert(model->weights.rope_freqs);
     assert(model->weights.token_embd);
 
     const GGUF_Metadata_t *contextSize = GGUF_MetadataFindByKey(model->metadata, model->metadataCount, "gemma4.context_length");
@@ -331,16 +330,8 @@ void Model_Release(Model_t *model)
 }
 
 /******************************************************************************
- * Private Function Implementations
+ * Language Model Processing
  ******************************************************************************/
-
-static const GGUF_TensorInfo_t *GetTensorForBlock(Model_t *model, size_t blockIndex, const char *tensorName)
-{
-    // e.g. blk.34.proj.weight
-    char fullName[256];
-    assert((int)sizeof(fullName) > snprintf(fullName, sizeof(fullName), "blk.%lu.%s", blockIndex, tensorName));
-    return GGUF_TensorFindByName(model->tensorInfo, model->tensorInfoCount, fullName);
-}
 
 static float *ForwardProcess(Model_t *model, RuntimeData_t *runtimeData, uint32_t token, uint32_t position, bool preFill)
 {
@@ -398,22 +389,6 @@ static float *ForwardProcess(Model_t *model, RuntimeData_t *runtimeData, uint32_
     }
 
     return logits;
-}
-
-static int CompareTokenProbabilities(const void *a, const void *b)
-{
-    const TokenProbability_t *tokenA = (const TokenProbability_t *)a;
-    const TokenProbability_t *tokenB = (const TokenProbability_t *)b;
-
-    if (tokenA->probability < tokenB->probability)
-    {
-        return 1;
-    }
-    if (tokenA->probability > tokenB->probability)
-    {
-        return -1;
-    }
-    return 0;
 }
 
 static uint32_t SelectTokenFromLogits(Model_t *model, RuntimeData_t *runtimeData, float *logits)
@@ -498,120 +473,6 @@ static uint32_t SelectTokenFromLogits(Model_t *model, RuntimeData_t *runtimeData
 #endif
 
     return runtimeData->tokenProbabilities[selectedIndex].tokenId;
-}
-
-static RuntimeData_t *AllocateRuntimeData(Model_t *model)
-{
-    RuntimeData_t *tmp = malloc(sizeof(RuntimeData_t));
-    assert(tmp);
-    tmp->logits = malloc(model->tokenCount * sizeof(float));
-    tmp->tokenProbabilities = malloc(model->tokenCount * sizeof(TokenProbability_t));
-    assert(tmp->logits);
-    assert(tmp->tokenProbabilities);
-    tmp->x = malloc(model->embeddingLength * sizeof(float));
-    tmp->residuals = malloc(model->embeddingLength * sizeof(float));
-    tmp->tmp1 = malloc(model->embeddingLength * sizeof(float));
-    tmp->tmp2 = malloc(model->embeddingLength * sizeof(float));
-    assert(tmp->x);
-    assert(tmp->residuals);
-    assert(tmp->tmp1);
-    assert(tmp->tmp2);
-
-    assert(model->weights.per_layer_token_embd);
-    const size_t totalInjectedSize = model->weights.per_layer_token_embd->dimensions[0];
-    const size_t perLayerSize = totalInjectedSize / model->blockCount;
-    tmp->perLayerEmbeddings = malloc(totalInjectedSize * sizeof(float));
-    tmp->allLayerModelProjections = malloc(totalInjectedSize * sizeof(float));
-    tmp->downProjected = malloc(perLayerSize * sizeof(float));
-    assert(tmp->perLayerEmbeddings);
-    assert(tmp->allLayerModelProjections);
-    assert(tmp->downProjected);
-
-    // Allocate buffers for the feed forward network
-    const GGUF_Metadata_t *feedForwardLengths = GGUF_MetadataFindByKey(model->metadata, model->metadataCount, "gemma4.feed_forward_length");
-    assert(feedForwardLengths);
-    assert(feedForwardLengths->type == GGUF_METADATA_VALUE_TYPE_ARRAY);
-    assert(feedForwardLengths->value.array.type == GGUF_METADATA_VALUE_TYPE_INT32);
-    int32_t largestForwardBuffer = 0;
-    for (size_t i = 0; i < feedForwardLengths->value.array.length; i++)
-    {
-        const int32_t value = feedForwardLengths->value.array.array[i].int32;
-        if (value > largestForwardBuffer)
-            largestForwardBuffer = value;
-    }
-    tmp->ffnHiddenGate = malloc((size_t)largestForwardBuffer * sizeof(float));
-    tmp->ffnHiddenUp = malloc((size_t)largestForwardBuffer * sizeof(float));
-    assert(tmp->ffnHiddenGate);
-    assert(tmp->ffnHiddenUp);
-
-    // Allocate buffers for the QKV attention calculations
-    size_t maxQ = 0;
-    size_t maxK = 0;
-    size_t maxV = 0;
-    tmp->kvCacheOffsets = malloc(model->blockCount * sizeof(size_t));
-    assert(tmp->kvCacheOffsets);
-    size_t kvCacheSize = 0;
-    for (size_t block = 0; block < model->blockCount; block++)
-    {
-        tmp->kvCacheOffsets[block] = kvCacheSize;
-        const GGUF_TensorInfo_t *q = GetTensorForBlock(model, block, "attn_q.weight");
-        const GGUF_TensorInfo_t *k = GetTensorForBlock(model, block, "attn_k.weight");
-        const GGUF_TensorInfo_t *v = GetTensorForBlock(model, block, "attn_v.weight");
-        assert(q && k && v);
-        assert(q->dimensionCount == 2 && k->dimensionCount == 2 && v->dimensionCount == 2);
-        if (q->dimensions[1] > maxQ)
-            maxQ = q->dimensions[1];
-        if (k->dimensions[1] > maxK)
-            maxK = k->dimensions[1];
-        if (v->dimensions[1] > maxV)
-            maxV = v->dimensions[1];
-
-        assert(maxK == maxV);
-        kvCacheSize += model->contextSize * (k->dimensions[1] + v->dimensions[1]);
-    }
-
-    tmp->q = malloc(maxQ * sizeof(float));
-    tmp->k = malloc(maxK * sizeof(float));
-    tmp->v = malloc(maxV * sizeof(float));
-    assert(tmp->q);
-    assert(tmp->k);
-    assert(tmp->v);
-
-    tmp->vMixed = malloc(maxQ * sizeof(float));
-    assert(tmp->vMixed);
-
-    // KV cache
-    tmp->kvCache = malloc(kvCacheSize * sizeof(float));
-    tmp->attentionScores = malloc(model->contextSize * sizeof(float));
-    assert(tmp->kvCache);
-    assert(tmp->attentionScores);
-    return tmp;
-}
-
-void ReleaseRuntimeData(RuntimeData_t *data)
-{
-    if (data)
-    {
-        free(data->logits);
-        free(data->x);
-        free(data->residuals);
-        free(data->tmp1);
-        free(data->tmp2);
-        free(data->perLayerEmbeddings);
-        free(data->allLayerModelProjections);
-        free(data->downProjected);
-        free(data->ffnHiddenGate);
-        free(data->ffnHiddenUp);
-        free(data->q);
-        free(data->k);
-        free(data->v);
-        free(data->kvCache);
-        free(data->kvCacheOffsets);
-        free(data->attentionScores);
-        free(data->vMixed);
-        free(data->tokenProbabilities);
-        free(data);
-    }
 }
 
 static void RunAttention(Model_t *model, RuntimeData_t *runtimeData, uint32_t blockNumber, uint32_t position)
@@ -911,4 +772,146 @@ static float *RunClassifier(Model_t *model, RuntimeData_t *runtimeData)
     }
     DEBUG_TENSOR(runtimeData->logits, model->tokenCount);
     return runtimeData->logits;
+}
+
+/******************************************************************************
+ * General Utility Functions
+ ******************************************************************************/
+
+static int CompareTokenProbabilities(const void *a, const void *b)
+{
+    const TokenProbability_t *tokenA = (const TokenProbability_t *)a;
+    const TokenProbability_t *tokenB = (const TokenProbability_t *)b;
+
+    if (tokenA->probability < tokenB->probability)
+    {
+        return 1;
+    }
+    if (tokenA->probability > tokenB->probability)
+    {
+        return -1;
+    }
+    return 0;
+}
+
+static RuntimeData_t *AllocateRuntimeData(Model_t *model)
+{
+    RuntimeData_t *tmp = malloc(sizeof(RuntimeData_t));
+    assert(tmp);
+    tmp->logits = malloc(model->tokenCount * sizeof(float));
+    tmp->tokenProbabilities = malloc(model->tokenCount * sizeof(TokenProbability_t));
+    assert(tmp->logits);
+    assert(tmp->tokenProbabilities);
+    tmp->x = malloc(model->embeddingLength * sizeof(float));
+    tmp->residuals = malloc(model->embeddingLength * sizeof(float));
+    tmp->tmp1 = malloc(model->embeddingLength * sizeof(float));
+    tmp->tmp2 = malloc(model->embeddingLength * sizeof(float));
+    assert(tmp->x);
+    assert(tmp->residuals);
+    assert(tmp->tmp1);
+    assert(tmp->tmp2);
+
+    assert(model->weights.per_layer_token_embd);
+    const size_t totalInjectedSize = model->weights.per_layer_token_embd->dimensions[0];
+    const size_t perLayerSize = totalInjectedSize / model->blockCount;
+    tmp->perLayerEmbeddings = malloc(totalInjectedSize * sizeof(float));
+    tmp->allLayerModelProjections = malloc(totalInjectedSize * sizeof(float));
+    tmp->downProjected = malloc(perLayerSize * sizeof(float));
+    assert(tmp->perLayerEmbeddings);
+    assert(tmp->allLayerModelProjections);
+    assert(tmp->downProjected);
+
+    // Allocate buffers for the feed forward network
+    const GGUF_Metadata_t *feedForwardLengths = GGUF_MetadataFindByKey(model->metadata, model->metadataCount, "gemma4.feed_forward_length");
+    assert(feedForwardLengths);
+    assert(feedForwardLengths->type == GGUF_METADATA_VALUE_TYPE_ARRAY);
+    assert(feedForwardLengths->value.array.type == GGUF_METADATA_VALUE_TYPE_INT32);
+    int32_t largestForwardBuffer = 0;
+    for (size_t i = 0; i < feedForwardLengths->value.array.length; i++)
+    {
+        const int32_t value = feedForwardLengths->value.array.array[i].int32;
+        if (value > largestForwardBuffer)
+            largestForwardBuffer = value;
+    }
+    tmp->ffnHiddenGate = malloc((size_t)largestForwardBuffer * sizeof(float));
+    tmp->ffnHiddenUp = malloc((size_t)largestForwardBuffer * sizeof(float));
+    assert(tmp->ffnHiddenGate);
+    assert(tmp->ffnHiddenUp);
+
+    // Allocate buffers for the QKV attention calculations
+    size_t maxQ = 0;
+    size_t maxK = 0;
+    size_t maxV = 0;
+    tmp->kvCacheOffsets = malloc(model->blockCount * sizeof(size_t));
+    assert(tmp->kvCacheOffsets);
+    size_t kvCacheSize = 0;
+    for (size_t block = 0; block < model->blockCount; block++)
+    {
+        tmp->kvCacheOffsets[block] = kvCacheSize;
+        const GGUF_TensorInfo_t *q = GetTensorForBlock(model, block, "attn_q.weight");
+        const GGUF_TensorInfo_t *k = GetTensorForBlock(model, block, "attn_k.weight");
+        const GGUF_TensorInfo_t *v = GetTensorForBlock(model, block, "attn_v.weight");
+        assert(q && k && v);
+        assert(q->dimensionCount == 2 && k->dimensionCount == 2 && v->dimensionCount == 2);
+        if (q->dimensions[1] > maxQ)
+            maxQ = q->dimensions[1];
+        if (k->dimensions[1] > maxK)
+            maxK = k->dimensions[1];
+        if (v->dimensions[1] > maxV)
+            maxV = v->dimensions[1];
+
+        assert(maxK == maxV);
+        kvCacheSize += model->contextSize * (k->dimensions[1] + v->dimensions[1]);
+    }
+
+    tmp->q = malloc(maxQ * sizeof(float));
+    tmp->k = malloc(maxK * sizeof(float));
+    tmp->v = malloc(maxV * sizeof(float));
+    assert(tmp->q);
+    assert(tmp->k);
+    assert(tmp->v);
+
+    tmp->vMixed = malloc(maxQ * sizeof(float));
+    assert(tmp->vMixed);
+
+    // KV cache
+    tmp->kvCache = malloc(kvCacheSize * sizeof(float));
+    tmp->attentionScores = malloc(model->contextSize * sizeof(float));
+    assert(tmp->kvCache);
+    assert(tmp->attentionScores);
+    return tmp;
+}
+
+void ReleaseRuntimeData(RuntimeData_t *data)
+{
+    if (data)
+    {
+        free(data->logits);
+        free(data->x);
+        free(data->residuals);
+        free(data->tmp1);
+        free(data->tmp2);
+        free(data->perLayerEmbeddings);
+        free(data->allLayerModelProjections);
+        free(data->downProjected);
+        free(data->ffnHiddenGate);
+        free(data->ffnHiddenUp);
+        free(data->q);
+        free(data->k);
+        free(data->v);
+        free(data->kvCache);
+        free(data->kvCacheOffsets);
+        free(data->attentionScores);
+        free(data->vMixed);
+        free(data->tokenProbabilities);
+        free(data);
+    }
+}
+
+static const GGUF_TensorInfo_t *GetTensorForBlock(Model_t *model, size_t blockIndex, const char *tensorName)
+{
+    // e.g. blk.34.proj.weight
+    char fullName[256];
+    assert((int)sizeof(fullName) > snprintf(fullName, sizeof(fullName), "blk.%lu.%s", blockIndex, tensorName));
+    return GGUF_TensorFindByName(model->tensorInfo, model->tensorInfoCount, fullName);
 }

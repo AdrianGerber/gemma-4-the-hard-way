@@ -1,7 +1,7 @@
 /**
  * @file      Model.h
  * @author    Adrian Gerber
- * @brief     Bare-minimum implementation for working with language models.
+ * @brief     Bare-minimum implementation for the gemma-4-e2b-it-Q8_0 language model.
  * @copyright Copyright (c) 2026 Adrian Gerber
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -43,8 +43,13 @@
  * Type Definitions
  ******************************************************************************/
 
+/**
+ * @brief Weights applied during each transformer block
+ *
+ */
 typedef struct
 {
+    // Attention
     const GGUF_TensorInfo_t *attn_k;
     const GGUF_TensorInfo_t *attn_k_norm;
     const GGUF_TensorInfo_t *attn_norm;
@@ -52,35 +57,45 @@ typedef struct
     const GGUF_TensorInfo_t *attn_q;
     const GGUF_TensorInfo_t *attn_q_norm;
     const GGUF_TensorInfo_t *attn_v;
+    const GGUF_TensorInfo_t *post_attention_norm;
+
+    // Feed Forward Network
     const GGUF_TensorInfo_t *ffn_down;
     const GGUF_TensorInfo_t *ffn_gate;
     const GGUF_TensorInfo_t *ffn_norm;
     const GGUF_TensorInfo_t *ffn_up;
     const GGUF_TensorInfo_t *inp_gate;
-    const GGUF_TensorInfo_t *layer_output_scale;
-    const GGUF_TensorInfo_t *post_attention_norm;
     const GGUF_TensorInfo_t *post_ffw_norm;
+
+    // Token injection
     const GGUF_TensorInfo_t *post_norm;
     const GGUF_TensorInfo_t *proj;
+    const GGUF_TensorInfo_t *layer_output_scale;
 } BlockWeights_t;
 
+/**
+ * @brief Structure to represent the final probability of each token. Mainly for
+ *        convenience so we can apply qsort to find the most likely tokens.
+ *
+ */
 typedef struct
 {
-    uint32_t tokenId;
-    float probability;
+    uint32_t tokenId;  // ID of the token
+    float probability; // Probability that this token ID is selected.
 } TokenProbability_t;
 
+/**
+ * @brief Buffers required for the computation (allocated once to avoid repeated malloc/free calls in the hot loop).
+ *
+ */
 typedef struct
 {
-    float *logits;
+    // General buffers
     float *x;
     float *residuals;
     float *tmp1, *tmp2;
-    float *perLayerEmbeddings;
-    float *allLayerModelProjections;
-    float *downProjected;
-    float *ffnHiddenGate;
-    float *ffnHiddenUp;
+
+    // Attention
     float *q;
     float *k;
     float *v;
@@ -88,39 +103,69 @@ typedef struct
     size_t *kvCacheOffsets;
     float *attentionScores;
     float *vMixed;
+
+    // Feed Forward Network
+    float *ffnHiddenGate;
+    float *ffnHiddenUp;
+
+    // Per-layer token injection
+    float *perLayerEmbeddings;
+    float *allLayerModelProjections;
+    float *downProjected;
+
+    // Output
+    float *logits;
     TokenProbability_t *tokenProbabilities;
 } RuntimeData_t;
 
 /**
- * @brief Structure representing the information needed to run a language model.
+ * @brief Structure representing the constant information needed to run a language model.
  *
  */
 typedef struct
 {
+    // Lists of metadata parameters and tensors loaded from the GGUF file
     GGUF_Metadata_t *metadata;
     GGUF_TensorInfo_t *tensorInfo;
-    size_t metadataCount, tensorInfoCount, blockCount, tokenCount, contextSize, embeddingLength, alignment;
+    size_t metadataCount, tensorInfoCount;
+
+    // General constants extracted from the metadata for easy access.
+    size_t blockCount, tokenCount, contextSize, embeddingLength, alignment;
+
+    // Tokenizer instance set up with the model's vocabulary.
     Tokenizer_t tokenizer;
+
+    // Weights for inference
     struct
     {
+        // Per-block (35 blocks for gemma-4-e2b)
         BlockWeights_t *blocks;
-        const GGUF_TensorInfo_t *output_norm;
-        const GGUF_TensorInfo_t *per_layer_model_proj;
-        const GGUF_TensorInfo_t *per_layer_proj_norm;
-        const GGUF_TensorInfo_t *per_layer_token_embd;
-        const GGUF_TensorInfo_t *rope_freqs;
+
+        // Token embedding
         const GGUF_TensorInfo_t *token_embd;
+
+        // RMS normalization
         float rmsNormEpsilon;
-        float topP;
-        float temperature;
-        size_t topK;
+
+        // Attention (Interleaved sliding window and global layers)
+        size_t sharedAttentionLayerCount;
         float ropeFreqBase;
         float ropeFreqBaseSWA;
-        size_t sharedAttentionLayerCount;
-        float finalLogitSoftcapping;
         size_t attentionSlidingWindowSize;
-        size_t attentionKeyLength;
         size_t attentionSlidingWindowKeyLength;
+        size_t attentionKeyLength;
+
+        // Per-layer token injection
+        const GGUF_TensorInfo_t *per_layer_token_embd;
+        const GGUF_TensorInfo_t *per_layer_model_proj;
+        const GGUF_TensorInfo_t *per_layer_proj_norm;
+
+        // Final token selection
+        const GGUF_TensorInfo_t *output_norm;
+        float finalLogitSoftcapping;
+        size_t topK;
+        float topP;
+        float temperature;
     } weights;
 } Model_t;
 

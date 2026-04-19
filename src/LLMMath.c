@@ -215,8 +215,6 @@ void ApplyRoPE(float *vector, size_t count, size_t headSize, uint32_t position, 
         float *headData = vector + head * headSize;
         for (size_t i = 0; i < halfDimension; i++)
         {
-            // Note: I think there is a tensor that already contains the frequency values, although I don't
-            //       understand how this is supposed to work with the different attention layers (global / local).
             const float theta = (float)position / powf(frequencyBase, (float)(2 * i) / headSize);
 
             // Apply 2D rotation
