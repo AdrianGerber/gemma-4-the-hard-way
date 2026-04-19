@@ -92,3 +92,5 @@ Any accessed external documentation, tutorials and reference material will be de
 - [Mastering Gemma 4: A Comprehensive Deep Dive into Google's Next-Generation Open Model Architecture and Deployment](https://dev.to/jubinsoni/mastering-gemma-4-a-comprehensive-deep-dive-into-googles-next-generation-open-model-architecture-2f91)
 - [llama.cpp](https://github.com/ggml-org/llama.cpp) to dump known-good internal vectors to debug against.
 - [Wikipedia: Attention (Machine Learning)](https://en.wikipedia.org/wiki/Attention_(machine_learning))
+- [LLM Breakdown](https://mikexcohen.substack.com/p/llm-breakdown-46-transformer-outputs)
+- [Feed Forward Network](https://sampathkumaran.medium.com/llms-simplified-feed-forward-network-ffn-24ec761e664a)

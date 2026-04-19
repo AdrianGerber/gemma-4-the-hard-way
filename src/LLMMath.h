@@ -101,12 +101,23 @@ void AddScaledTensor(float *out, const float *in, const float *added, float scal
 /**
  * @brief Perform RMS normalization.
  *
- * @param output Result is written to this location. Can be one of the inputs.
+ * @param output Result is written to this location. Can be the input.
  * @param input Values to be normalized.
  * @param epsilon Epsilon to add for numerical stability.
  * @param count Number of elements to normalize.
  */
 void RMSNorm(float *output, const float *input, float epsilon, size_t count);
+
+/**
+ * @brief Perform RMS normalization with additional weighting factors.
+ *
+ * @param output Result is written to this location. Can be the input.
+ * @param input Values to be normalized.
+ * @param epsilon Epsilon to add for numerical stability.
+ * @param weights List of weights applied to the resulting vector.
+ * @param count Number of elements to normalize.
+ */
+void RMSNormWithWeights(float *output, const float *input, float epsilon, const GGUF_TensorInfo_t *weights, size_t count);
 
 /**
  * @brief Multiply a vector of floats by a (possibly quantized) 2D tensor.
@@ -130,6 +141,25 @@ void MultiplyMatrixAndVector(float *restrict out, size_t outCount, const float *
 float DotProduct(const float *a, const float *b, size_t count);
 
 /**
+ * @brief Perform tanh-based softcapping.
+ *
+ * @param output Result is written to this location. Can be the input.
+ * @param input Values to be capped
+ * @param weight Softcapping weight.
+ * @param count Number of elements to softcap.
+ */
+void SoftCap(float *output, const float *input, float weight, size_t count);
+
+/**
+ * @brief Apply the softmax function to a vector of values.
+ *
+ * @param output Result is written to this location. Can be the input.
+ * @param input Input values.
+ * @param count Number of elements to softcap.
+ */
+void SoftMax(float *output, const float *input, size_t count);
+
+/**
  * @brief Dequantize a tensor into a list of floats.
  *
  * @param output Output buffer.
@@ -149,5 +179,14 @@ void DequantizeTensor(float *output, size_t outputSize, const GGUF_TensorInfo_t 
  * @param frequencyBase RoPE base frequency.
  */
 void ApplyRoPE(float *vector, size_t count, size_t headSize, uint32_t position, float frequencyBase);
+
+/**
+ * @brief Apply the GeLu activation function to a vector.
+ *
+ * @param output Result is written to this location. Can be the input.
+ * @param input Input values
+ * @param count Number of elements.
+ */
+void ApplyGeLu(float *output, float *input, size_t count);
 
 #endif /* LLM_MATH_H_ */

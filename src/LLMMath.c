@@ -93,21 +93,26 @@ void AddScaledTensor(float *out, const float *in, const float *added, float scal
 
 void RMSNorm(float *output, const float *input, float epsilon, size_t count)
 {
-    double sum = 0.0;
-    for (size_t i = 0; i < count; i++)
-    {
-        sum += (double)input[i] * input[i];
-    }
-    float normalizingFactor = 1.0f / sqrtf((float)(sum / count) + epsilon);
+    const float sumOfSquares = DotProduct(input, input, count);
+    const float normalizingFactor = 1.0f / sqrtf(sumOfSquares / count + epsilon);
+    ScaleTensor(output, input, normalizingFactor, count);
+}
 
-    for (size_t i = 0; i < count; i++)
-    {
-        output[i] = (input[i] * normalizingFactor);
-    }
+void RMSNormWithWeights(float *output, const float *input, float epsilon, const GGUF_TensorInfo_t *weights, size_t count)
+{
+    RMSNorm(output, input, epsilon, count);
+
+    // Apply element-wise weights
+    assert(weights);
+    assert(weights->type == GGML_TYPE_F32);
+    assert(weights->dimensionCount == 1);
+    assert(weights->dimensions[0] == count);
+    MultiplyTensors(output, output, weights->data.float32, count);
 }
 
 void MultiplyMatrixAndVector(float *restrict out, size_t outCount, const float *restrict input, size_t inCount, const GGUF_TensorInfo_t *matrix)
 {
+    assert(matrix);
     assert(matrix->dimensionCount == 2);
     const size_t rows = matrix->dimensions[1];
     const size_t cols = matrix->dimensions[0];
@@ -170,6 +175,38 @@ float DotProduct(const float *a, const float *b, size_t count)
     return sum;
 }
 
+void SoftCap(float *output, const float *input, float weight, size_t count)
+{
+    for (size_t i = 0; i < count; i++)
+    {
+        output[i] = weight * tanhf(input[i] / weight);
+    }
+}
+
+void SoftMax(float *output, const float *input, size_t count)
+{
+    // Find the maximum value first. This is then subtracted from all values to avoid numberical stability issues.
+    float max = -INFINITY;
+    for (size_t i = 0; i <= count; i++)
+    {
+        if (input[i] > max)
+        {
+            max = input[i];
+        }
+    }
+
+    float sum = 0.0f;
+    for (size_t i = 0; i <= count; i++)
+    {
+        output[i] = expf(input[i] - max);
+        sum += output[i];
+    }
+    for (size_t i = 0; i <= count; i++)
+    {
+        output[i] /= sum;
+    }
+}
+
 void DequantizeTensor(float *output, size_t outputSize, const GGUF_TensorInfo_t *input, size_t inputOffset)
 {
     if (input->type == GGML_TYPE_Q8_0)
@@ -225,5 +262,14 @@ void ApplyRoPE(float *vector, size_t count, size_t headSize, uint32_t position, 
             headData[i] = x * cosTheta - y * sinTheta;
             headData[i + halfDimension] = x * sinTheta + y * cosTheta;
         }
+    }
+}
+
+void ApplyGeLu(float *output, float *input, size_t count)
+{
+    for (size_t i = 0; i < count; i++)
+    {
+        const float x = input[i];
+        output[i] = (x * 0.5f * (1.0f + erff(x / 1.41421356f)));
     }
 }
