@@ -169,6 +169,19 @@ void MultiplyMatrixAndVector(float *restrict out, size_t outCount, const float *
             out[row] = dotProduct;
         }
     }
+    else if (matrix->type == GGML_TYPE_BF16)
+    {
+        for (size_t row = 0; row < rows; row++)
+        {
+            float dotProduct = 0.0f;
+            for (size_t col = 0; col < cols; col++)
+            {
+                const float weight = GGUF_BrainFloat16ToFloat(matrix->data.bfloat16[cols * row + col]);
+                dotProduct += input[col] * weight;
+            }
+            out[row] = dotProduct;
+        }
+    }
     else
     {
         fprintf(stderr, "Unsupported quantized type: %d\n", matrix->type);

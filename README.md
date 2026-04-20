@@ -21,7 +21,11 @@ gemma-4-the-hard-way$ cmake --build build
 ### Download the Model
 
 ```sh
+# This model was used for development but is no longer available for some reason.
 gemma-4-the-hard-way$ wget https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-e2b-it-Q8_0.gguf
+
+# This one works as well after adding support for bf16 quantized matrices. 
+gemma-4-the-hard-way$ wget https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q8_0.gguf
 ```
 
 ### Run inference

@@ -67,7 +67,7 @@ int main(int argc, char *argv[])
     srand((unsigned int)time(NULL));
 
     // Map the file content into memory
-    const char *modelFilename = "gemma-4-e2b-it-Q8_0.gguf";
+    const char *modelFilename = "gemma-4-E2B-it-Q8_0.gguf";
     int f = open(modelFilename, O_RDONLY);
     if (f == -1)
     {

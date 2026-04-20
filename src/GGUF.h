@@ -179,7 +179,7 @@ typedef enum
     // GGML_TYPE_I64 = 27,
     // GGML_TYPE_F64 = 28,
     // GGML_TYPE_IQ1_M = 29,
-    // GGML_TYPE_BF16 = 30,
+    GGML_TYPE_BF16 = 30,
     // GGML_TYPE_Q4_0_4_4 = 31, support has been removed from gguf files
     // GGML_TYPE_Q4_0_4_8 = 32,
     // GGML_TYPE_Q4_0_8_8 = 33,
@@ -193,6 +193,7 @@ typedef enum
 } GGUF_Type_t;
 
 typedef uint16_t float16_t; // This looks so wrong :)
+typedef uint16_t bfloat16_t;
 
 typedef struct __attribute__((packed))
 {
@@ -208,6 +209,7 @@ typedef union
 {
     const float *float32;
     const float16_t *float16;
+    const bfloat16_t *bfloat16;
     const GGUF_Q8_0_t *q8_0;
 } GGUF_TensorData_t;
 
@@ -424,6 +426,26 @@ static inline float GGUF_Float16ToFloat(float16_t input)
     }
     out.u |= (input & 0x8000UL) << 16;
 
+    return out.f;
+}
+
+/**
+ * @brief Convert a bfloat16 number into the C float type.
+ *
+ * @param input 16 bit 'brainfloat' value.
+ * @return float Resulting C float.
+ */
+static inline float GGUF_BrainFloat16ToFloat(bfloat16_t input)
+{
+    assert(sizeof(float) == 4);
+    union FP32
+    {
+        uint32_t u;
+        float f;
+    };
+    union FP32 out;
+
+    out.u = (uint32_t)input << 16;
     return out.f;
 }
 

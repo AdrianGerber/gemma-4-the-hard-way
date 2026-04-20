@@ -267,6 +267,9 @@ void GGUF_TensorGetWeightsFromDataSection(GGUF_TensorInfo_t *tensor, const uint8
     case GGML_TYPE_Q8_0:
         tensor->data.q8_0 = (const GGUF_Q8_0_t *)(*data + tensor->offsetInDataSection);
         break;
+    case GGML_TYPE_BF16:
+        tensor->data.bfloat16 = (const bfloat16_t *)(*data + tensor->offsetInDataSection);
+        break;
     default:
         fprintf(stderr, "Unknown tensor data type %u\n", tensor->type);
         assert(false);
